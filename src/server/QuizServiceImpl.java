@@ -30,7 +30,7 @@ public class QuizServiceImpl extends UnicastRemoteObject implements QuizService 
 
     public int submitMockQuiz(int userId, Map<Integer, String> answers) throws RemoteException {
         System.out.println("User " + userId + " submitted quiz.");
-        int score = dbManager.calculateScore(answers);
+        int score = dbManager.calculateScore(userId, answers);
         logResultToFile(userId, score);
         return score;
     }
@@ -59,19 +59,19 @@ public class QuizServiceImpl extends UnicastRemoteObject implements QuizService 
     }
 
     @Override
+    public java.util.List<common.User> getAllStudents() throws RemoteException {
+        System.out.println("Fetching all student records for Admin...");
+        return dbManager.getAllStudents();
+    }
+
+    @Override
+    public boolean resetStudentSubmission(int studentId) throws RemoteException {
+        System.out.println("Admin resetting submission for Student ID: " + studentId);
+        return dbManager.resetStudent(studentId);
+    }
+
+    @Override
     public java.util.List<String> getAllResults() throws RemoteException {
-        java.util.List<String> results = new java.util.ArrayList<>();
-        try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.FileReader("results_log.txt"))) {
-            String line;
-            while ((line = br.readLine()) != null) {
-                results.add(line);
-            }
-        } catch (java.io.FileNotFoundException e) {
-            results.add("No results log found yet.");
-        } catch (java.io.IOException e) {
-            e.printStackTrace();
-            results.add("Error reading log file.");
-        }
-        return results;
+        return new java.util.ArrayList<>(); // Legacy method stub
     }
 }

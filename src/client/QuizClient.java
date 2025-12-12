@@ -19,14 +19,14 @@ public class QuizClient extends JFrame {
     private CardLayout cardLayout;
     private JPanel mainPanel;
 
-    // UI Colors
-    private final Color CLR_BG = new Color(30, 30, 30);
-    private final Color CLR_FG = new Color(230, 230, 230);
-    private final Color CLR_ACCENT = new Color(0, 122, 204);
+    // UI Colors (Light Theme)
+    private final Color CLR_BG = new Color(245, 245, 250); // Light Gray/White
+    private final Color CLR_FG = new Color(50, 50, 50); // Dark Text
+    private final Color CLR_ACCENT = new Color(0, 114, 188); // Professional Blue
 
     public QuizClient() {
         setTitle("Distributed Quiz System");
-        setSize(800, 600);
+        setSize(900, 700); // Slightly larger for Admin View
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setLocationRelativeTo(null);
 
@@ -93,6 +93,7 @@ public class QuizClient extends JFrame {
         p.setBackground(CLR_BG);
         JLabel l = new JLabel("Loading...", SwingConstants.CENTER);
         l.setForeground(CLR_FG);
+        l.setFont(new Font("Segoe UI", Font.BOLD, 18));
         p.add(l);
         return p;
     }
@@ -104,7 +105,7 @@ public class QuizClient extends JFrame {
         gbc.insets = new Insets(10, 10, 10, 10);
 
         JLabel title = new JLabel("Student Login");
-        title.setFont(new Font("Segoe UI", Font.BOLD, 24));
+        title.setFont(new Font("Segoe UI", Font.BOLD, 28));
         title.setForeground(CLR_FG);
 
         JTextField userField = new JTextField(15);
@@ -150,6 +151,9 @@ public class QuizClient extends JFrame {
                     currentUser = user;
                     if ("TEACHER".equalsIgnoreCase(user.getRole())) {
                         loadTeacherDashboard();
+                    } else if (user.hasSubmitted()) {
+                        JOptionPane.showMessageDialog(this,
+                                "You have already submitted this quiz.\nContact Admin to retake.");
                     } else {
                         loadQuiz();
                     }
@@ -160,7 +164,8 @@ public class QuizClient extends JFrame {
         }).start();
     }
 
-    // ---------------- TEACHER DASHBOARD ----------------
+    // ---------------- TEACHER DASHBOARD (Fixed Layout & Light Theme)
+    // ----------------
     private void loadTeacherDashboard() {
         cardLayout.show(mainPanel, "LOADING");
         new Thread(() -> {
@@ -172,57 +177,133 @@ public class QuizClient extends JFrame {
     }
 
     private JPanel createTeacherPanel() {
-        JPanel panel = new JPanel(new BorderLayout());
+        JPanel panel = new JPanel(new BorderLayout(10, 10)); // Add gap
         panel.setBackground(CLR_BG);
+
+        // 1. TOP CONTAINER (Header + Toolbar)
+        JPanel topContainer = new JPanel();
+        topContainer.setLayout(new BoxLayout(topContainer, BoxLayout.Y_AXIS));
+        topContainer.setBackground(CLR_BG);
 
         // Header
         JPanel header = new JPanel(new BorderLayout());
-        header.setBackground(CLR_BG);
-        JLabel titleLbl = new JLabel("  Admin Dashboard - " + currentUser.getUsername());
-        titleLbl.setForeground(CLR_FG);
-        titleLbl.setFont(new Font("Segoe UI", Font.BOLD, 16));
-        header.add(titleLbl, BorderLayout.WEST);
+        header.setBackground(new Color(230, 230, 230)); // Light Grey Header
+        header.setBorder(new EmptyBorder(15, 20, 15, 20));
 
-        panel.add(header, BorderLayout.NORTH);
+        JLabel titleLbl = new JLabel("Admin Dashboard");
+        titleLbl.setForeground(Color.DARK_GRAY);
+        titleLbl.setFont(new Font("Segoe UI", Font.BOLD, 22));
 
-        // Content (Log Area)
-        JTextArea logArea = new JTextArea();
-        logArea.setEditable(false);
-        logArea.setFont(new Font("Consolas", Font.PLAIN, 12));
-        logArea.setBackground(new Color(40, 40, 40));
-        logArea.setForeground(Color.CYAN);
-        JScrollPane scroll = new JScrollPane(logArea);
-        panel.add(scroll, BorderLayout.CENTER);
-
-        // Buttons
-        JPanel btnPanel = new JPanel();
-        btnPanel.setBackground(CLR_BG);
-
-        JButton refreshBtn = createStyledButton("Refresh Logs");
-        refreshBtn.addActionListener(e -> {
-            new Thread(() -> {
-                java.util.List<String> logs = executeSafe(() -> service.getAllResults());
-                SwingUtilities.invokeLater(() -> {
-                    logArea.setText("");
-                    if (logs != null) {
-                        for (String line : logs)
-                            logArea.append(line + "\n");
-                    }
-                });
-            }).start();
-        });
-
-        JButton logoutBtn = createStyledButton("Logout");
-        logoutBtn.setBackground(Color.RED.darker());
+        JButton logoutBtn = new JButton("Logout");
+        logoutBtn.setBackground(new Color(231, 76, 60));
+        logoutBtn.setForeground(Color.WHITE);
+        logoutBtn.setFocusPainted(false);
         logoutBtn.addActionListener(e -> cardLayout.show(mainPanel, "LOGIN"));
 
-        btnPanel.add(refreshBtn);
-        btnPanel.add(logoutBtn);
-        panel.add(btnPanel, BorderLayout.SOUTH);
+        header.add(titleLbl, BorderLayout.WEST);
+        header.add(logoutBtn, BorderLayout.EAST);
+        header.setMaximumSize(new Dimension(Integer.MAX_VALUE, 60));
+
+        // Toolbar
+        JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 15, 10)); // Flow with gap
+        toolbar.setBackground(CLR_BG);
+
+        JTextField searchField = new JTextField(15);
+        JButton searchBtn = createStyledButton("Search");
+        JButton rankBtn = createStyledButton("Rank Score");
+        JButton refreshBtn = createStyledButton("Refresh");
+        JButton allowRetryBtn = createStyledButton("Reset Student");
+        allowRetryBtn.setBackground(new Color(46, 204, 113)); // Green
+
+        toolbar.add(new JLabel("Find:"));
+        toolbar.add(searchField);
+        toolbar.add(searchBtn);
+        toolbar.add(new JSeparator(SwingConstants.VERTICAL));
+        toolbar.add(rankBtn);
+        toolbar.add(refreshBtn);
+        toolbar.add(allowRetryBtn);
+        toolbar.setMaximumSize(new Dimension(Integer.MAX_VALUE, 50));
+
+        topContainer.add(header);
+        topContainer.add(toolbar);
+        panel.add(topContainer, BorderLayout.NORTH);
+
+        // 3. Table
+        String[] columns = { "ID", "Student ID", "Name", "Department", "Score", "Submitted?" };
+        javax.swing.table.DefaultTableModel model = new javax.swing.table.DefaultTableModel(columns, 0) {
+            public boolean isCellEditable(int row, int column) {
+                return false;
+            }
+        };
+        JTable table = new JTable(model);
+        table.setRowHeight(30);
+        table.setFont(new Font("Segoe UI", Font.PLAIN, 14));
+        table.setShowGrid(true);
+        table.setGridColor(Color.LIGHT_GRAY);
+        table.getTableHeader().setFont(new Font("Segoe UI", Font.BOLD, 14));
+        table.getTableHeader().setBackground(new Color(220, 220, 220));
+        table.getTableHeader().setForeground(Color.BLACK);
+
+        JScrollPane scroll = new JScrollPane(table);
+        scroll.setBorder(new EmptyBorder(0, 10, 10, 10));
+        panel.add(scroll, BorderLayout.CENTER);
+
+        // Logic
+        java.awt.event.ActionListener refreshAction = e -> {
+            new Thread(() -> {
+                try {
+                    List<User> students = executeSafe(() -> service.getAllStudents());
+                    SwingUtilities.invokeLater(() -> {
+                        model.setRowCount(0);
+                        if (students != null) {
+                            String query = searchField.getText().toLowerCase();
+
+                            if (e.getSource() == rankBtn) {
+                                students.sort((s1, s2) -> Integer.compare(s2.getScore(), s1.getScore()));
+                            } else {
+                                students.sort((s1, s2) -> Integer.compare(s1.getId(), s2.getId()));
+                            }
+
+                            for (User s : students) {
+                                if (!query.isEmpty() && !s.getUsername().toLowerCase().contains(query)
+                                        && !s.getFullName().toLowerCase().contains(query)) {
+                                    continue;
+                                }
+                                model.addRow(new Object[] { s.getId(), s.getUsername(), s.getFullName(),
+                                        s.getDepartment(), s.getScore(), s.hasSubmitted() ? "YES" : "NO" });
+                            }
+                        }
+                    });
+                } catch (Exception ex) {
+                    ex.printStackTrace();
+                }
+            }).start();
+        };
+
+        refreshBtn.addActionListener(refreshAction);
+        searchBtn.addActionListener(refreshAction);
+        rankBtn.addActionListener(refreshAction);
+
+        allowRetryBtn.addActionListener(e -> {
+            int row = table.getSelectedRow();
+            if (row != -1) {
+                int id = (int) model.getValueAt(row, 0);
+                String name = (String) model.getValueAt(row, 2);
+                int confirm = JOptionPane.showConfirmDialog(panel, "Reset quiz for " + name + "?", "Confirm",
+                        JOptionPane.YES_NO_OPTION);
+                if (confirm == JOptionPane.YES_OPTION) {
+                    new Thread(() -> {
+                        executeSafe(() -> service.resetStudentSubmission(id));
+                        refreshBtn.doClick();
+                    }).start();
+                }
+            } else {
+                JOptionPane.showMessageDialog(panel, "Select a student row first.");
+            }
+        });
 
         // Initial Load
         refreshBtn.doClick();
-
         return panel;
     }
     // ---------------------------------------------------
@@ -262,17 +343,19 @@ public class QuizClient extends JFrame {
 
         for (Question q : questions) {
             JPanel qPanel = new JPanel(new BorderLayout());
-            qPanel.setBackground(new Color(45, 45, 45));
-            qPanel.setBorder(new EmptyBorder(10, 10, 10, 10));
+            qPanel.setBackground(Color.WHITE); // Light card
+            qPanel.setBorder(BorderFactory.createCompoundBorder(
+                    BorderFactory.createLineBorder(new Color(200, 200, 200), 1),
+                    new EmptyBorder(10, 10, 10, 10)));
             qPanel.setMaximumSize(new Dimension(700, 150));
 
             JLabel qText = new JLabel("Q: " + q.getText());
-            qText.setForeground(Color.WHITE);
+            qText.setForeground(CLR_FG);
             qText.setFont(new Font("Segoe UI", Font.BOLD, 14));
             qPanel.add(qText, BorderLayout.NORTH);
 
             JPanel optionsPanel = new JPanel(new GridLayout(2, 2));
-            optionsPanel.setBackground(new Color(45, 45, 45));
+            optionsPanel.setBackground(Color.WHITE);
 
             JRadioButton rA = createRadio(q.getOptionA());
             JRadioButton rB = createRadio(q.getOptionB());
@@ -313,7 +396,7 @@ public class QuizClient extends JFrame {
         titleLbl.setFont(new Font("Segoe UI", Font.BOLD, 16));
 
         JLabel timeLbl = new JLabel("Syncing Time...  ");
-        timeLbl.setForeground(Color.ORANGE);
+        timeLbl.setForeground(new Color(230, 126, 34)); // Orange
         timeLbl.setFont(new Font("Consolas", Font.BOLD, 14));
 
         header.add(titleLbl, BorderLayout.WEST);
@@ -327,7 +410,6 @@ public class QuizClient extends JFrame {
                 Long serverTimeObj = executeSafe(() -> service.getServerTime());
                 if (serverTimeObj == null)
                     return;
-
                 long serverTime = serverTimeObj;
                 long localTime = System.currentTimeMillis();
                 long offset = serverTime - localTime;
@@ -379,7 +461,7 @@ public class QuizClient extends JFrame {
     private JRadioButton createRadio(String text) {
         JRadioButton r = new JRadioButton(text);
         r.setForeground(CLR_FG);
-        r.setBackground(new Color(45, 45, 45));
+        r.setBackground(Color.WHITE);
         r.setFocusPainted(false);
         return r;
     }

@@ -11,7 +11,7 @@ import java.util.Map;
 public class DatabaseManager {
     private static final String URL = "jdbc:mysql://localhost:3300/distributed_quiz";
     private static final String USER = "root";
-    private static final String PASS = ""; // Default XAMPP/MySQL password often empty
+    private static final String PASS = "";
 
     private Connection connection;
     private boolean useMock = false;
@@ -19,17 +19,15 @@ public class DatabaseManager {
     public DatabaseManager() {
         try {
             Class.forName("com.mysql.cj.jdbc.Driver");
-            // First connect without DB to check/create it
             connection = DriverManager.getConnection("jdbc:mysql://localhost:3300/", USER, PASS);
             Statement stmt = connection.createStatement();
             stmt.executeUpdate("CREATE DATABASE IF NOT EXISTS distributed_quiz");
             stmt.close();
             connection.close();
 
-            // Now connect to the DB
             connection = DriverManager.getConnection(URL, USER, PASS);
             createTablesIfNotExist();
-            System.out.println("Connected to Database (Auto-Created if needed).");
+            System.out.println("Connected to Database (Modern Schema).");
         } catch (Exception e) {
             System.err.println("Database connection failed (" + e.getMessage() + "). Using MOCK mode.");
             useMock = true;
@@ -38,12 +36,37 @@ public class DatabaseManager {
 
     private void createTablesIfNotExist() {
         try (Statement stmt = connection.createStatement()) {
-            // Users
-            stmt.executeUpdate("CREATE TABLE IF NOT EXISTS users (" +
+            // DETECT & FIX OLD SCHEMA
+            try {
+                // If 'users' table exists, drop it to migrate to new schema
+                ResultSet rs = stmt.executeQuery("SHOW TABLES LIKE 'users'");
+                if (rs.next()) {
+                    System.out.println("Migrating Config: Dropping legacy 'users' table...");
+                    stmt.executeUpdate("DROP TABLE users");
+                }
+            } catch (SQLException ignored) {
+            }
+
+            // ADMIN TABLE
+            stmt.executeUpdate("CREATE TABLE IF NOT EXISTS admins (" +
                     "id INT AUTO_INCREMENT PRIMARY KEY, " +
                     "username VARCHAR(50) NOT NULL UNIQUE, " +
                     "password VARCHAR(255) NOT NULL, " +
-                    "role ENUM('STUDENT', 'TEACHER') DEFAULT 'STUDENT')");
+                    "full_name VARCHAR(100) DEFAULT 'Administrator')");
+
+            // STUDENT TABLE
+            stmt.executeUpdate("CREATE TABLE IF NOT EXISTS students (" +
+                    "id INT AUTO_INCREMENT PRIMARY KEY, " +
+                    "username VARCHAR(50) NOT NULL UNIQUE, " +
+                    "password VARCHAR(255) NOT NULL, " +
+                    "full_name VARCHAR(100), " +
+                    "department VARCHAR(100), " +
+                    "score INT DEFAULT 0, " +
+                    "has_submitted BOOLEAN DEFAULT FALSE)");
+
+            // DROP Old 'users' table if conflicting (Use only if you want to force
+            // migration, otherwise leave it)
+            // stmt.executeUpdate("DROP TABLE IF EXISTS users");
 
             // Questions
             stmt.executeUpdate("CREATE TABLE IF NOT EXISTS questions (" +
@@ -56,7 +79,7 @@ public class DatabaseManager {
                     "correct_option CHAR(1) NOT NULL)");
 
             // Seed Data Check
-            ResultSet rs = stmt.executeQuery("SELECT count(*) FROM users");
+            ResultSet rs = stmt.executeQuery("SELECT count(*) FROM admins");
             if (rs.next() && rs.getInt(1) == 0) {
                 seedData(stmt);
             }
@@ -66,8 +89,16 @@ public class DatabaseManager {
     }
 
     private void seedData(Statement stmt) throws SQLException {
+        // Admin
         stmt.executeUpdate(
-                "INSERT INTO users (username, password, role) VALUES ('admin', 'admin123', 'TEACHER'), ('student', 'pass123', 'STUDENT')");
+                "INSERT INTO admins (username, password, full_name) VALUES ('admin', 'admin123', 'System Administrator')");
+
+        // Students
+        stmt.executeUpdate("INSERT INTO students (username, password, full_name, department) VALUES " +
+                "('S101', 'pass123', 'Alice Smith', 'Computer Science'), " +
+                "('S102', 'pass123', 'Bob Jones', 'Engineering')");
+
+        // Questions
         stmt.executeUpdate(
                 "INSERT INTO questions (question_text, option_a, option_b, option_c, option_d, correct_option) VALUES "
                         +
@@ -79,28 +110,120 @@ public class DatabaseManager {
 
     public User authenticate(String username, String password) {
         if (useMock) {
-            if ("student".equals(username) && "pass".equals(password)) {
-                return new User(1, "student", "STUDENT");
+            if ("admin".equals(username) && "admin123".equals(password)) {
+                return new User(1, "admin", "TEACHER", "Admin Mock", "IT");
             }
-            if ("teacher".equals(username) && "admin".equals(password)) {
-                return new User(2, "teacher", "TEACHER");
-            }
-            return null;
+            return new User(2, username, "STUDENT", "Student Mock", "CS");
         }
 
         try {
-            PreparedStatement ps = connection
-                    .prepareStatement("SELECT * FROM users WHERE username = ? AND password = ?");
-            ps.setString(1, username);
-            ps.setString(2, password);
-            ResultSet rs = ps.executeQuery();
-            if (rs.next()) {
-                return new User(rs.getInt("id"), rs.getString("username"), rs.getString("role"));
+            // Check Admin
+            PreparedStatement psAdmin = connection
+                    .prepareStatement("SELECT * FROM admins WHERE username = ? AND password = ?");
+            psAdmin.setString(1, username);
+            psAdmin.setString(2, password);
+            ResultSet rsA = psAdmin.executeQuery();
+            if (rsA.next()) {
+                return new User(rsA.getInt("id"), rsA.getString("username"), "TEACHER", rsA.getString("full_name"),
+                        "Admin Dept");
+            }
+
+            // Check Student
+            PreparedStatement psStud = connection
+                    .prepareStatement("SELECT * FROM students WHERE username = ? AND password = ?");
+            psStud.setString(1, username);
+            psStud.setString(2, password);
+            ResultSet rsS = psStud.executeQuery();
+            if (rsS.next()) {
+                User u = new User(rsS.getInt("id"), rsS.getString("username"), "STUDENT", rsS.getString("full_name"),
+                        rsS.getString("department"));
+                u.setScore(rsS.getInt("score"));
+                u.setHasSubmitted(rsS.getBoolean("has_submitted"));
+                return u;
             }
         } catch (SQLException e) {
             e.printStackTrace();
         }
         return null;
+    }
+
+    public List<User> getAllStudents() {
+        List<User> list = new ArrayList<>();
+        if (useMock)
+            return list;
+        try {
+            Statement stmt = connection.createStatement();
+            ResultSet rs = stmt.executeQuery("SELECT * FROM students");
+            while (rs.next()) {
+                User u = new User(rs.getInt("id"), rs.getString("username"), "STUDENT", rs.getString("full_name"),
+                        rs.getString("department"));
+                u.setScore(rs.getInt("score"));
+                u.setHasSubmitted(rs.getBoolean("has_submitted"));
+                list.add(u);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return list;
+    }
+
+    public boolean resetStudent(int id) {
+        if (useMock)
+            return true;
+        try {
+            PreparedStatement ps = connection
+                    .prepareStatement("UPDATE students SET has_submitted = FALSE, score = 0 WHERE id = ?");
+            ps.setInt(1, id);
+            return ps.executeUpdate() > 0;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false;
+        }
+    }
+
+    public int calculateScore(int studentId, Map<Integer, String> answers) {
+        int score = 0;
+        Map<Integer, String> correctAnswers = new HashMap<>();
+
+        // Fetch Correct Answers
+        if (!useMock) {
+            try {
+                Statement stmt = connection.createStatement();
+                ResultSet rs = stmt.executeQuery("SELECT id, correct_option FROM questions");
+                while (rs.next()) {
+                    correctAnswers.put(rs.getInt("id"), rs.getString("correct_option"));
+                }
+            } catch (SQLException e) {
+                e.printStackTrace();
+            }
+        } else {
+            // Mock data
+            correctAnswers.put(1, "C");
+            correctAnswers.put(2, "B");
+            correctAnswers.put(3, "A");
+        }
+
+        for (Map.Entry<Integer, String> entry : answers.entrySet()) {
+            String correct = correctAnswers.get(entry.getKey());
+            if (correct != null && correct.equalsIgnoreCase(entry.getValue())) {
+                score++;
+            }
+        }
+
+        // SAVE TO DB
+        if (!useMock) {
+            try {
+                PreparedStatement ps = connection
+                        .prepareStatement("UPDATE students SET score = ?, has_submitted = TRUE WHERE id = ?");
+                ps.setInt(1, score);
+                ps.setInt(2, studentId);
+                ps.executeUpdate();
+            } catch (SQLException e) {
+                e.printStackTrace();
+            }
+        }
+
+        return score;
     }
 
     public List<Question> getQuestions() {
@@ -128,36 +251,5 @@ public class DatabaseManager {
             e.printStackTrace();
         }
         return list;
-    }
-
-    public int calculateScore(Map<Integer, String> answers) {
-        int score = 0;
-
-        // Mock answers
-        Map<Integer, String> correctAnswers = new HashMap<>();
-        if (useMock) {
-            correctAnswers.put(1, "C"); // Paris is 3rd option? usually A=0, B=1, C=2. Let's assume input is "A", "B",
-                                        // "C"...
-            correctAnswers.put(2, "B");
-            correctAnswers.put(3, "A");
-        } else {
-            try {
-                Statement stmt = connection.createStatement();
-                ResultSet rs = stmt.executeQuery("SELECT id, correct_option FROM questions");
-                while (rs.next()) {
-                    correctAnswers.put(rs.getInt("id"), rs.getString("correct_option"));
-                }
-            } catch (SQLException e) {
-                e.printStackTrace();
-            }
-        }
-
-        for (Map.Entry<Integer, String> entry : answers.entrySet()) {
-            String correct = correctAnswers.get(entry.getKey());
-            if (correct != null && correct.equalsIgnoreCase(entry.getValue())) {
-                score++;
-            }
-        }
-        return score;
     }
 }
