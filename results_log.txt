@@ -12,3 +12,16 @@ Time: 1765578266495 | UserID: 1 | Score: 0
 Time: 1765588384746 | UserID: 1 | Score: 0
 Time: 1765588529782 | UserID: 3 | Score: 0
 Time: 1765598990422 | UserID: 1 | Score: 1
+Time: 1765703722284 | UserID: 1 | Score: 0
+Time: 1765716772696 | UserID: 1 | Score: 1
+Time: 1765716896248 | UserID: 1 | Score: 1
+Time: 1765717312257 | UserID: 2 | Score: 0
+Time: 1765717879921 | UserID: 6 | Score: 1
+Time: 1765717975926 | UserID: 6 | Score: 1
+Time: 1765717994684 | UserID: 6 | Score: 1
+Time: 1765718207790 | UserID: 6 | Score: 1
+Time: 1765718261610 | UserID: 6 | Score: 1
+Time: 1765718429357 | UserID: 6 | Score: 1
+Time: 1765718717574 | UserID: 6 | Score: 1
+Time: 1765718726682 | UserID: 6 | Score: 0
+Time: 1765734854751 | UserID: 15 | Score: 1

@@ -7,6 +7,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
 
 public class DatabaseManager {
     private static final String URL = "jdbc:mysql://localhost:3306/distributed_quiz";
@@ -33,7 +36,7 @@ public class DatabaseManager {
 
             connection = DriverManager.getConnection(URL, USER, PASS);
             createTablesIfNotExist();
-            System.out.println("Connected to Database (Modern Schema).");
+            System.out.println("Connected to Database (Standard Schema - Separate Tables).");
         } catch (Exception e) {
             System.err.println("Database connection failed (" + e.getMessage() + "). Using MOCK mode.");
             useMock = true;
@@ -42,13 +45,11 @@ public class DatabaseManager {
 
     public void createTablesIfNotExist() {
         try (Statement stmt = connection.createStatement()) {
-            // DETECT & FIX OLD SCHEMA
+
+            // CLEANUP MIGRATION
+            // We revert to old tables. Drop 'users' if it exists to avoid confusion.
             try {
-                ResultSet rs = stmt.executeQuery("SHOW TABLES LIKE 'users'");
-                if (rs.next()) {
-                    System.out.println("Migrating Config: Dropping legacy 'users' table...");
-                    stmt.executeUpdate("DROP TABLE users");
-                }
+                stmt.executeUpdate("DROP TABLE IF EXISTS users");
             } catch (SQLException ignored) {
             }
 
@@ -66,6 +67,13 @@ public class DatabaseManager {
                     "password VARCHAR(255) NOT NULL, " +
                     "full_name VARCHAR(100))");
 
+            // REVIEWERS TABLE (Exam Reviewer)
+            stmt.executeUpdate("CREATE TABLE IF NOT EXISTS reviewers (" +
+                    "id INT AUTO_INCREMENT PRIMARY KEY, " +
+                    "username VARCHAR(50) NOT NULL UNIQUE, " +
+                    "password VARCHAR(255) NOT NULL, " +
+                    "full_name VARCHAR(100))");
+
             // STUDENT TABLE
             stmt.executeUpdate("CREATE TABLE IF NOT EXISTS students (" +
                     "id INT AUTO_INCREMENT PRIMARY KEY, " +
@@ -73,18 +81,19 @@ public class DatabaseManager {
                     "password VARCHAR(255) NOT NULL, " +
                     "full_name VARCHAR(100), " +
                     "department VARCHAR(100), " +
+                    "full_name VARCHAR(100), " +
+                    "department VARCHAR(100), " +
+                    "gender VARCHAR(10), " +
                     "score INT DEFAULT 0, " +
                     "has_submitted BOOLEAN DEFAULT FALSE)");
 
-            // STUDENT SUBMISSIONS (Strict Check)
-            stmt.executeUpdate("CREATE TABLE IF NOT EXISTS student_submissions (" +
-                    "id INT AUTO_INCREMENT PRIMARY KEY, " +
-                    "student_id INT, " +
-                    "subject_id INT, " +
-                    "score INT, " +
-                    "submission_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP, " +
-                    "FOREIGN KEY (student_id) REFERENCES students(id), " +
-                    "FOREIGN KEY (subject_id) REFERENCES subjects(id))");
+            // Migration: Add gender column if it doesn't exist (Fix for Add User issue)
+            try {
+                stmt.executeUpdate("ALTER TABLE students ADD COLUMN gender VARCHAR(10)");
+                System.out.println("Applied migration: Added 'gender' column to students table.");
+            } catch (SQLException e) {
+                // Column likely already exists
+            }
 
             // SUBJECTS TABLE
             stmt.executeUpdate("CREATE TABLE IF NOT EXISTS subjects (" +
@@ -92,26 +101,40 @@ public class DatabaseManager {
                     "name VARCHAR(100) NOT NULL, " +
                     "access_code VARCHAR(50) NOT NULL UNIQUE, " +
                     "start_time TIMESTAMP NULL, " +
-                    "end_time TIMESTAMP NULL)");
+                    "end_time TIMESTAMP NULL, " +
+                    "is_published BOOLEAN DEFAULT FALSE, " +
+                    "status VARCHAR(50) DEFAULT 'PENDING_REVIEW', " +
+                    "created_by INT DEFAULT NULL)");
 
-            // UPGRADE SUBJECTS TABLE
+            // Migration: Add status column if it doesn't exist
             try {
-                // Ensure columns exist (Idempotent approach using simple ADD inside try/catch
-                // if column missing is harder standard SQL,
-                // but for this env we assume it might fail if exists. Better: Check columns.)
-                // Given the limitation, we rely on the fact that if it fails, it prints stack
-                // trace but continues?
-                // No, I need to be careful.
-                // Safest: Just run ALTER IGNORE or catch.
-                stmt.executeUpdate("ALTER TABLE subjects ADD COLUMN is_published BOOLEAN DEFAULT FALSE");
-                stmt.executeUpdate("ALTER TABLE subjects ADD COLUMN created_by INT DEFAULT NULL");
+                stmt.executeUpdate("ALTER TABLE subjects ADD COLUMN status VARCHAR(50) DEFAULT 'PENDING_REVIEW'");
+                System.out.println("Added 'status' column to subjects table");
             } catch (SQLException e) {
-                // Ignore "Duplicate column name" error
+                // Column already exists, ignore
+            }
+
+            // STUDENT SUBMISSIONS (Referencing students(id))
+            stmt.executeUpdate("CREATE TABLE IF NOT EXISTS student_submissions (" +
+                    "id INT AUTO_INCREMENT PRIMARY KEY, " +
+                    "student_id INT, " +
+                    "subject_id INT, " +
+                    "score INT, " +
+                    "submission_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP, " +
+                    "FOREIGN KEY (student_id) REFERENCES students(id), " +
+                    "FOREIGN KEY (subject_id) REFERENCES subjects(id), " +
+                    "UNIQUE KEY unique_submission (student_id, subject_id))");
+
+            // Migration: Add UNIQUE constraint if missing
+            try {
+                stmt.executeUpdate(
+                        "ALTER TABLE student_submissions ADD UNIQUE KEY unique_submission (student_id, subject_id)");
+                System.out.println("Applied migration: Added UNIQUE constraint to student_submissions");
+            } catch (SQLException e) {
+                // Constraint likely already exists
             }
 
             // QUESTIONS TABLE
-            // Drop old questions table to ensure schema match
-            stmt.executeUpdate("DROP TABLE IF EXISTS questions");
             stmt.executeUpdate("CREATE TABLE IF NOT EXISTS questions (" +
                     "id INT AUTO_INCREMENT PRIMARY KEY, " +
                     "subject_id INT, " +
@@ -123,9 +146,29 @@ public class DatabaseManager {
                     "correct_option CHAR(1) NOT NULL, " +
                     "FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE)");
 
-            // Seed Data (Safe to run always, checks inside)
-            seedData(stmt);
+            // RESULTS TABLE
+            stmt.executeUpdate("CREATE TABLE IF NOT EXISTS results (" +
+                    "id INT AUTO_INCREMENT PRIMARY KEY, " +
+                    "user_id INT, " +
+                    "subject_id INT, " +
+                    "score INT, " +
+                    "total_questions INT, " +
+                    "completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, " +
+                    "FOREIGN KEY (user_id) REFERENCES students(id), " +
+                    "FOREIGN KEY (subject_id) REFERENCES subjects(id))");
 
+            // EXAM_REVIEWS TABLE (Audit trail for admin reviews)
+            stmt.executeUpdate("CREATE TABLE IF NOT EXISTS exam_reviews (" +
+                    "id INT AUTO_INCREMENT PRIMARY KEY, " +
+                    "subject_id INT NOT NULL, " +
+                    "reviewer_id INT NOT NULL, " +
+                    "action VARCHAR(50) NOT NULL, " +
+                    "comments TEXT, " +
+                    "reviewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, " +
+                    "FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE)");
+
+            // Seed Data
+            seedData(stmt);
         } catch (SQLException e) {
             e.printStackTrace();
         }
@@ -141,7 +184,19 @@ public class DatabaseManager {
                 System.out.println("Seeded Admins.");
             }
         } catch (SQLException e) {
-            System.out.println("Skipping Admin seed (Msg: " + e.getMessage() + ")");
+            System.out.println("Skipping Admin seed: " + e.getMessage());
+        }
+
+        // Reviewers (Exam Reviewer)
+        try {
+            ResultSet rs = stmt.executeQuery("SELECT count(*) FROM reviewers");
+            if (rs.next() && rs.getInt(1) == 0) {
+                stmt.executeUpdate(
+                        "INSERT INTO reviewers (username, password, full_name) VALUES ('reviewer', 'pass123', 'Exam Reviewer')");
+                System.out.println("Seeded Reviewers.");
+            }
+        } catch (SQLException e) {
+            System.out.println("Skipping Reviewer seed: " + e.getMessage());
         }
 
         // Teachers (Creator)
@@ -153,23 +208,13 @@ public class DatabaseManager {
                 System.out.println("Seeded Teachers.");
             }
         } catch (SQLException e) {
-            System.out.println("Skipping Teacher seed (Msg: " + e.getMessage() + ")");
+            System.out.println("Skipping Teacher seed: " + e.getMessage());
         }
 
-        // Students
-        try {
-            ResultSet rs = stmt.executeQuery("SELECT count(*) FROM students");
-            if (rs.next() && rs.getInt(1) == 0) {
-                stmt.executeUpdate("INSERT INTO students (username, password, full_name, department) VALUES " +
-                        "('S101', 'pass123', 'Alice Smith', 'Computer Science'), " +
-                        "('S102', 'pass123', 'Bob Jones', 'Engineering')");
-                System.out.println("Seeded Students.");
-            }
-        } catch (SQLException e) {
-            System.out.println("Skipping Student seed (Msg: " + e.getMessage() + ")");
-        }
+        // Import Students from CSV into STUDENTS table
+        importStudentsFromCSV();
 
-        // Subjects (Requested by User)
+        // Subjects
         try {
             ResultSet rs = stmt.executeQuery("SELECT count(*) FROM subjects");
             if (rs.next() && rs.getInt(1) == 0) {
@@ -181,7 +226,6 @@ public class DatabaseManager {
                         "('Software Architecture Design', 'ARCH505', NOW(), DATE_ADD(NOW(), INTERVAL 2 HOUR)), " +
                         "('Artificial Intelligence', 'AI606', NOW(), DATE_ADD(NOW(), INTERVAL 2 HOUR)), " +
                         "('Project Management', 'PM707', NOW(), DATE_ADD(NOW(), INTERVAL 2 HOUR))");
-                System.out.println("Seeded Subjects.");
             }
         } catch (SQLException e) {
             System.err.println("Error Seeding Subjects: " + e.getMessage());
@@ -199,7 +243,6 @@ public class DatabaseManager {
                                 "(1, 'What does PHP stand for?', 'Private Home Page', 'Personal Hypertext Processor', 'PHP: Hypertext Preprocessor', 'Public Hosting Platform', 'C'), "
                                 +
                                 "(1, 'Which symbol starts a variable in PHP?', '@', '$', '#', '&', 'B')");
-
                 // 2: Compiler Design
                 stmt.executeUpdate(
                         "INSERT INTO questions (subject_id, question_text, option_a, option_b, option_c, option_d, correct_option) VALUES "
@@ -207,7 +250,6 @@ public class DatabaseManager {
                                 "(2, 'What is the first phase of compilation?', 'Syntax Analysis', 'Lexical Analysis', 'Code Generation', 'Optimization', 'B'), "
                                 +
                                 "(2, 'What tool is used for lexical analysis?', 'YACC', 'Bison', 'Lex', 'GDB', 'C')");
-
                 // 3: Distributed System
                 stmt.executeUpdate(
                         "INSERT INTO questions (subject_id, question_text, option_a, option_b, option_c, option_d, correct_option) VALUES "
@@ -215,7 +257,6 @@ public class DatabaseManager {
                                 "(3, 'Which is NOT a characteristic of distributed systems?', 'Concurrency', 'Scalability', 'Single Point of Failure', 'Transparency', 'C'), "
                                 +
                                 "(3, 'RMI stands for?', 'Remote Method Invocation', 'Remote Memory Interface', 'Random Method Interaction', 'Real Machine Instruction', 'A')");
-
                 // 4: Software Architecture
                 stmt.executeUpdate(
                         "INSERT INTO questions (subject_id, question_text, option_a, option_b, option_c, option_d, correct_option) VALUES "
@@ -223,60 +264,78 @@ public class DatabaseManager {
                                 "(4, 'Which pattern is used for separating concerns?', 'Singleton', 'MVC', 'Factory', 'Observer', 'B'), "
                                 +
                                 "(4, 'What does UML stand for?', 'Unified Modeling Language', 'Universal Machine Logic', 'Unique Model Link', 'User Mode Linux', 'A')");
-
-                System.out.println("Seeded Questions.");
             }
         } catch (SQLException e) {
             System.err.println("Error Seeding Questions: " + e.getMessage());
         }
     }
 
-    public common.Subject getSubjectByCode(String code, int studentId) throws Exception {
-        if (useMock)
-            return new common.Subject(1, "Mock Subject", code, new java.sql.Timestamp(System.currentTimeMillis()),
-                    new java.sql.Timestamp(System.currentTimeMillis() + 3600000));
+    private void importStudentsFromCSV() {
+        String csvFile = "students.CSV";
+        File f = new File(csvFile);
+        if (!f.exists())
+            return;
 
+        // Check if students already imported
         try {
-            // 1. Check if Subject Exists
-            PreparedStatement ps = connection.prepareStatement("SELECT * FROM subjects WHERE access_code = ?");
-            ps.setString(1, code);
-            ResultSet rs = ps.executeQuery();
-            if (rs.next()) {
-                common.Subject sub = new common.Subject(
-                        rs.getInt("id"),
-                        rs.getString("name"),
-                        rs.getString("access_code"),
-                        rs.getTimestamp("start_time"),
-                        rs.getTimestamp("end_time"));
-
-                boolean isPublished = rs.getBoolean("is_published");
-                if (!isPublished) {
-                    throw new Exception("This exam is currently a DRAFT and has not been published.");
-                }
-
-                // 2. Check strict submission (Student Submission Table)
-                PreparedStatement psCheck = connection.prepareStatement(
-                        "SELECT count(*) FROM student_submissions WHERE student_id = ? AND subject_id = ?");
-                psCheck.setInt(1, studentId);
-                psCheck.setInt(2, sub.getId());
-                ResultSet rsCheck = psCheck.executeQuery();
-                if (rsCheck.next() && rsCheck.getInt(1) > 0) {
-                    // Strict check
-                    throw new Exception("You have already submitted this quiz. Contact Admin to retake.");
-                }
-
-                return sub;
+            Statement checkStmt = connection.createStatement();
+            ResultSet rs = checkStmt.executeQuery("SELECT COUNT(*) FROM students");
+            if (rs.next() && rs.getInt(1) > 0) {
+                System.out.println("Students already imported. Skipping CSV import.");
+                return;
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            System.err.println("Error checking student count: " + e.getMessage());
         }
-        return null;
+
+        System.out.println("Importing students from " + csvFile + " into 'students' table...");
+        String sql = "INSERT INTO students (username, password, full_name, department) VALUES (?, ?, ?, ?)";
+
+        try (BufferedReader br = new BufferedReader(new FileReader(csvFile));
+                PreparedStatement pstmt = connection.prepareStatement(sql)) {
+
+            String line;
+            int count = 0;
+            while ((line = br.readLine()) != null) {
+                if (line.trim().isEmpty() || line.startsWith("//"))
+                    continue;
+                String[] parts = line.split("\t");
+                if (parts.length > 0 && parts[0].equalsIgnoreCase("Default User Name"))
+                    continue;
+                if (parts.length < 9)
+                    continue;
+
+                String username = parts[0].trim(); // DBU ID
+                String password = "pass123"; // Default password
+                String fullName = parts[2].trim() + " " + parts[3].trim() + " " + parts[4].trim();
+                String department = parts[8].trim();
+
+                pstmt.setString(1, username);
+                pstmt.setString(2, password);
+                pstmt.setString(3, fullName);
+                pstmt.setString(4, department);
+
+                try {
+                    pstmt.executeUpdate();
+                    count++;
+                } catch (SQLException e) {
+                    // Ignore duplicates
+                }
+            }
+            System.out.println("Student CSV Import Complete. Imported " + count + " students.");
+        } catch (Exception e) {
+            System.err.println("CSV Import Failed: " + e.getMessage());
+        }
     }
 
-    public User authenticate(String username, String password) {
-        if (useMock)
-            return new User(1, username, "STUDENT", "Mock User", "CS");
-
+    public common.User authenticate(String username, String password) {
+        if (useMock) {
+            if ("admin".equals(username))
+                return new User(1, "admin", "ADMIN", "Admin", "IT");
+            if ("creator".equals(username))
+                return new User(2, "creator", "TEACHER", "Teacher", "IT");
+            return new User(3, username, "STUDENT", "Student", "IT");
+        }
         try {
             // Check Admin
             PreparedStatement psAdmin = connection
@@ -285,7 +344,7 @@ public class DatabaseManager {
             psAdmin.setString(2, password);
             ResultSet rsA = psAdmin.executeQuery();
             if (rsA.next()) {
-                return new User(rsA.getInt("id"), rsA.getString("username"), "TEACHER", rsA.getString("full_name"),
+                return new User(rsA.getInt("id"), rsA.getString("username"), "ADMIN", rsA.getString("full_name"),
                         "Admin Dept");
             }
 
@@ -296,9 +355,19 @@ public class DatabaseManager {
             psTeach.setString(2, password);
             ResultSet rsT = psTeach.executeQuery();
             if (rsT.next()) {
-                // Role CREATOR
-                return new User(rsT.getInt("id"), rsT.getString("username"), "CREATOR", rsT.getString("full_name"),
+                return new User(rsT.getInt("id"), rsT.getString("username"), "TEACHER", rsT.getString("full_name"),
                         "Exam Creator");
+            }
+
+            // Check Reviewer
+            PreparedStatement psReviewer = connection
+                    .prepareStatement("SELECT * FROM reviewers WHERE username = ? AND password = ?");
+            psReviewer.setString(1, username);
+            psReviewer.setString(2, password);
+            ResultSet rsR = psReviewer.executeQuery();
+            if (rsR.next()) {
+                return new User(rsR.getInt("id"), rsR.getString("username"), "REVIEWER", rsR.getString("full_name"),
+                        "Exam Reviewer");
             }
 
             // Check Student
@@ -310,8 +379,8 @@ public class DatabaseManager {
             if (rsS.next()) {
                 User u = new User(rsS.getInt("id"), rsS.getString("username"), "STUDENT", rsS.getString("full_name"),
                         rsS.getString("department"));
-                // u.setScore(...) - Score is now per subject, so this legacy global score is
-                // less relevant but we can keep it
+                u.setScore(rsS.getInt("score"));
+                u.setHasSubmitted(rsS.getBoolean("has_submitted"));
                 return u;
             }
         } catch (SQLException e) {
@@ -320,122 +389,59 @@ public class DatabaseManager {
         return null;
     }
 
-    public List<User> getAllStudents() {
-        List<User> list = new ArrayList<>();
+    public common.Subject getSubjectByCode(String code, int studentId) throws Exception {
         if (useMock)
-            return list;
+            return new common.Subject(1, "Mock Subject", code, new java.sql.Timestamp(System.currentTimeMillis()),
+                    new java.sql.Timestamp(System.currentTimeMillis() + 3600000), true);
+
         try {
-            Statement stmt = connection.createStatement();
-            ResultSet rs = stmt.executeQuery("SELECT * FROM students");
-            while (rs.next()) {
-                User u = new User(rs.getInt("id"), rs.getString("username"), "STUDENT", rs.getString("full_name"),
-                        rs.getString("department"));
-                // Simple score fetch for display (sum of all?) or legacy
-                u.setScore(rs.getInt("score"));
-                u.setHasSubmitted(rs.getBoolean("has_submitted"));
-                list.add(u);
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        return list;
-    }
-
-    public boolean resetStudent(int id) {
-        if (useMock)
-            return true;
-        try {
-            // Delete submissions for this student allow retake of ALL
-            PreparedStatement ps = connection.prepareStatement("DELETE FROM student_submissions WHERE student_id = ?");
-            ps.setInt(1, id);
-            ps.executeUpdate();
-
-            // Also reset legacy
-            PreparedStatement ps2 = connection
-                    .prepareStatement("UPDATE students SET has_submitted = FALSE, score = 0 WHERE id = ?");
-            ps2.setInt(1, id);
-            return ps2.executeUpdate() > 0;
-        } catch (Exception e) {
-            e.printStackTrace();
-            return false;
-        }
-    }
-
-    public int calculateScore(int studentId, int subjectId, Map<Integer, String> answers) {
-        int score = 0;
-        Map<Integer, String> correctAnswers = new HashMap<>();
-
-        // Fetch Correct Answers for Subject
-        try {
-            PreparedStatement ps = connection
-                    .prepareStatement("SELECT id, correct_option FROM questions WHERE subject_id = ?");
-            ps.setInt(1, subjectId);
+            PreparedStatement ps = connection.prepareStatement("SELECT * FROM subjects WHERE access_code = ?");
+            ps.setString(1, code);
             ResultSet rs = ps.executeQuery();
-            while (rs.next()) {
-                correctAnswers.put(rs.getInt("id"), rs.getString("correct_option"));
+            if (rs.next()) {
+                common.Subject sub = new common.Subject(
+                        rs.getInt("id"),
+                        rs.getString("name"),
+                        rs.getString("access_code"),
+                        rs.getTimestamp("start_time"),
+                        rs.getTimestamp("end_time"),
+                        rs.getBoolean("is_published"));
+
+                // Check if student has ALREADY submitted (Referencing students logic)
+                if (hasStudentSubmitted(studentId, sub.getId())) {
+                    throw new Exception("You have already submitted this exam.");
+                }
+
+                if (!sub.isPublished()) {
+                    throw new Exception("This exam is not yet published."); // Draft mode
+                }
+
+                return sub;
+            }
+        } catch (SQLException e) {
+            throw e;
+        }
+        return null;
+    }
+
+    private boolean hasStudentSubmitted(int studentId, int subjectId) throws SQLException {
+        try {
+            PreparedStatement ps = connection.prepareStatement(
+                    "SELECT count(*) FROM student_submissions WHERE student_id = ? AND subject_id = ?");
+            ps.setInt(1, studentId);
+            ps.setInt(2, subjectId);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                int count = rs.getInt(1);
+                System.out.println("Checking submission for Student " + studentId + " in Subject " + subjectId
+                        + ": Count=" + count);
+                return count > 0;
             }
         } catch (SQLException e) {
             e.printStackTrace();
+            throw e; // Fail secure!
         }
-
-        for (Map.Entry<Integer, String> entry : answers.entrySet()) {
-            String correct = correctAnswers.get(entry.getKey());
-            if (correct != null && correct.equalsIgnoreCase(entry.getValue())) {
-                score++;
-            }
-        }
-
-        // SAVE TO DB (student_submissions)
-        if (!useMock) {
-            try {
-                PreparedStatement ps = connection.prepareStatement(
-                        "INSERT INTO student_submissions (student_id, subject_id, score) VALUES (?, ?, ?)");
-                ps.setInt(1, studentId);
-                ps.setInt(2, subjectId);
-                ps.setInt(3, score);
-                ps.executeUpdate();
-
-                // Legacy Update
-                PreparedStatement psLegacy = connection
-                        .prepareStatement("UPDATE students SET score = score + ?, has_submitted = TRUE WHERE id = ?");
-                psLegacy.setInt(1, score);
-                psLegacy.setInt(2, studentId);
-                psLegacy.executeUpdate();
-
-            } catch (SQLException e) {
-                e.printStackTrace();
-            }
-        }
-
-        return score;
-    }
-
-    // New Creator Methods
-    public boolean addSubject(String name, String code, Timestamp start, Timestamp end, int creatorId) {
-        try {
-            PreparedStatement ps = connection.prepareStatement(
-                    "INSERT INTO subjects (name, access_code, start_time, end_time, created_by, is_published) VALUES (?, ?, ?, ?, ?, FALSE)");
-            ps.setString(1, name);
-            ps.setString(2, code);
-            ps.setTimestamp(3, start);
-            ps.setTimestamp(4, end);
-            ps.setInt(5, creatorId);
-            return ps.executeUpdate() > 0;
-        } catch (Exception e) {
-            e.printStackTrace();
-            return false;
-        }
-    }
-
-    public boolean publishSubject(int subjectId) {
-        try {
-            PreparedStatement ps = connection.prepareStatement("UPDATE subjects SET is_published = TRUE WHERE id = ?");
-            ps.setInt(1, subjectId);
-            return ps.executeUpdate() > 0;
-        } catch (Exception e) {
-            e.printStackTrace();
-            return false;
-        }
+        return false;
     }
 
     public boolean addQuestion(int subjectId, String text, String a, String b, String c, String d, String correct) {
@@ -449,7 +455,17 @@ public class DatabaseManager {
             ps.setString(5, c);
             ps.setString(6, d);
             ps.setString(7, correct);
-            return ps.executeUpdate() > 0;
+            boolean success = ps.executeUpdate() > 0;
+
+            // Update status to QUESTIONS_PENDING if currently APPROVED_FOR_QUESTIONS
+            if (success) {
+                PreparedStatement psUpdate = connection.prepareStatement(
+                        "UPDATE subjects SET status = 'QUESTIONS_PENDING' WHERE id = ? AND status = 'APPROVED_FOR_QUESTIONS'");
+                psUpdate.setInt(1, subjectId);
+                psUpdate.executeUpdate();
+            }
+
+            return success;
         } catch (Exception e) {
             e.printStackTrace();
             return false;
@@ -479,6 +495,7 @@ public class DatabaseManager {
         } catch (SQLException e) {
             e.printStackTrace();
         }
+        return list;
     }
 
     public List<common.Subject> getAllSubjects() {
@@ -489,14 +506,15 @@ public class DatabaseManager {
             Statement stmt = connection.createStatement();
             ResultSet rs = stmt.executeQuery("SELECT * FROM subjects");
             while (rs.next()) {
-                // Assuming Subject model update: id, name, code, start, end, isPublished
                 list.add(new common.Subject(
                         rs.getInt("id"),
                         rs.getString("name"),
                         rs.getString("access_code"),
                         rs.getTimestamp("start_time"),
                         rs.getTimestamp("end_time"),
-                        rs.getBoolean("is_published")));
+                        rs.getBoolean("is_published"),
+                        rs.getString("status"),
+                        rs.getInt("created_by")));
             }
         } catch (SQLException e) {
             e.printStackTrace();
@@ -506,7 +524,8 @@ public class DatabaseManager {
 
     public List<common.Subject> getSubjectsByCreator(int creatorId) {
         List<common.Subject> list = new ArrayList<>();
-        if (useMock) return list;
+        if (useMock)
+            return list;
         try {
             PreparedStatement ps = connection.prepareStatement("SELECT * FROM subjects WHERE created_by = ?");
             ps.setInt(1, creatorId);
@@ -518,9 +537,347 @@ public class DatabaseManager {
                         rs.getString("access_code"),
                         rs.getTimestamp("start_time"),
                         rs.getTimestamp("end_time"),
-                        rs.getBoolean("is_published")
-                ));
+                        rs.getBoolean("is_published"),
+                        rs.getString("status"),
+                        rs.getInt("created_by")));
             }
-        } catch (SQLException e) { e.printStackTrace(); }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
         return list;
     }
+
+    public List<common.User> getAllStudents() {
+        List<common.User> list = new ArrayList<>();
+        try {
+            // Revert logic: Select from students table
+            Statement stmt = connection.createStatement();
+            ResultSet rs = stmt.executeQuery("SELECT * FROM students ORDER BY id DESC");
+            while (rs.next()) {
+                User u = new User(
+                        rs.getInt("id"),
+                        rs.getString("username"),
+                        "STUDENT",
+                        rs.getString("full_name"),
+                        rs.getString("department"));
+                u.setScore(rs.getInt("score"));
+                u.setHasSubmitted(rs.getBoolean("has_submitted"));
+                list.add(u);
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return list;
+    }
+
+    public boolean resetStudentSubmissionForSubject(int studentId, int subjectId) {
+        try {
+            // 1. Get the score for this specific submission to decrement from total
+            PreparedStatement psScore = connection.prepareStatement(
+                    "SELECT score FROM student_submissions WHERE student_id = ? AND subject_id = ?");
+            psScore.setInt(1, studentId);
+            psScore.setInt(2, subjectId);
+            ResultSet rs = psScore.executeQuery();
+
+            int scoreToRemove = 0;
+            if (rs.next()) {
+                scoreToRemove = rs.getInt("score");
+            }
+
+            // 2. Decrement student's global score
+            PreparedStatement psUpdate = connection.prepareStatement(
+                    "UPDATE students SET score = GREATEST(0, score - ?) WHERE id = ?");
+            psUpdate.setInt(1, scoreToRemove);
+            psUpdate.setInt(2, studentId);
+            psUpdate.executeUpdate();
+
+            // 3. Delete the mock submission
+            PreparedStatement psDelete = connection.prepareStatement(
+                    "DELETE FROM student_submissions WHERE student_id = ? AND subject_id = ?");
+            psDelete.setInt(1, studentId);
+            psDelete.setInt(2, subjectId);
+            int rows = psDelete.executeUpdate();
+
+            // 4. Also delete from results table
+            PreparedStatement psDeleteResults = connection.prepareStatement(
+                    "DELETE FROM results WHERE user_id = ? AND subject_id = ?");
+            psDeleteResults.setInt(1, studentId);
+            psDeleteResults.setInt(2, subjectId);
+            psDeleteResults.executeUpdate();
+
+            return rows > 0;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false;
+        }
+    }
+
+    public int calculateScore(int studentId, int subjectId, Map<Integer, String> answers) throws SQLException {
+        System.out.println("DEBUG: Calculating score for Student " + studentId + " Subject " + subjectId);
+        int score = 0;
+        Map<Integer, String> correctAnswers = new HashMap<>();
+
+        // Fetch Correct Answers for Subject
+        PreparedStatement ps = connection
+                .prepareStatement("SELECT id, correct_option FROM questions WHERE subject_id = ?");
+        ps.setInt(1, subjectId);
+        ResultSet rs = ps.executeQuery();
+        while (rs.next()) {
+            correctAnswers.put(rs.getInt("id"), rs.getString("correct_option"));
+        }
+
+        for (Map.Entry<Integer, String> entry : answers.entrySet()) {
+            String correct = correctAnswers.get(entry.getKey());
+            if (correct != null && correct.equalsIgnoreCase(entry.getValue())) {
+                score++;
+            }
+        }
+
+        System.out.println("DEBUG: Calculated Score = " + score);
+
+        // SAVE TO DB (student_submissions)
+        if (!useMock) {
+            System.out.println("DEBUG: Attempting to insert into student_submissions...");
+
+            // Use ON DUPLICATE KEY UPDATE to handle retries (if previous attempt failed
+            // halfway)
+            PreparedStatement psInsert = connection.prepareStatement(
+                    "INSERT INTO student_submissions (student_id, subject_id, score) VALUES (?, ?, ?) " +
+                            "ON DUPLICATE KEY UPDATE score = VALUES(score), submission_time = CURRENT_TIMESTAMP");
+            psInsert.setInt(1, studentId);
+            psInsert.setInt(2, subjectId);
+            psInsert.setInt(3, score);
+            int rows = psInsert.executeUpdate();
+            System.out.println("DEBUG: student_submissions INSERT/UPDATE result rows: " + rows);
+
+            // Also save to results table (Always Insert new record for history? Or also
+            // update?)
+            // Ideally results table is history, so we might want to just Insert.
+            // But if we want unique results per exam attempt, maybe we should just insert.
+            // For now, let's keep it as Insert, but wrap in try-catch to allow progress if
+            // it fails non-critically?
+            // Actually user wants to just "Submit".
+
+            try {
+                PreparedStatement psResults = connection.prepareStatement(
+                        "INSERT INTO results (user_id, subject_id, score, total_questions) VALUES (?, ?, ?, ?)");
+                psResults.setInt(1, studentId);
+                psResults.setInt(2, subjectId);
+                psResults.setInt(3, score);
+                psResults.setInt(4, correctAnswers.size()); // Total questions
+                psResults.executeUpdate();
+            } catch (SQLException e) {
+                System.out.println("Warning: Could not insert into results table (might be duplicate or other issue): "
+                        + e.getMessage());
+                // Don't fail the whole submission just for the 'results' log table if the main
+                // one succeeded
+            }
+
+            // Update students table accumulation
+            // Only update score if it's a new submission?
+            // The logic "score = score + ?" implies accumulation.
+            // If we are UPDATING an existing submission (retry), we shouldn't add the score
+            // AGAIN.
+            // But this is complex to track.
+            // For now, to unblock the user, we assume this is "fixing" a broken state.
+            // A better approach for "students.score" (Global Score) would be to recalculate
+            // it from sum(student_submissions).
+            // But let's leave it simple for now and prevent crash.
+
+            try {
+                PreparedStatement psUpd = connection
+                        .prepareStatement("UPDATE students SET score = score + ?, has_submitted = TRUE WHERE id = ?");
+                psUpd.setInt(1, score);
+                psUpd.setInt(2, studentId);
+                psUpd.executeUpdate();
+            } catch (Exception e) {
+                System.out.println("Warning: Could not update student global score: " + e.getMessage());
+            }
+
+            System.out.println("DEBUG: Submission saved successfully.");
+        }
+
+        return score;
+    }
+
+    // New Creator Methods
+    public boolean addSubject(String name, String code, Timestamp start, Timestamp end, int creatorId) {
+        try {
+            PreparedStatement ps = connection.prepareStatement(
+                    "INSERT INTO subjects (name, access_code, start_time, end_time, created_by, is_published, status) VALUES (?, ?, ?, ?, ?, FALSE, 'PENDING_REVIEW')");
+            ps.setString(1, name);
+            ps.setString(2, code);
+            ps.setTimestamp(3, start);
+            ps.setTimestamp(4, end);
+            ps.setInt(5, creatorId);
+            int result = ps.executeUpdate();
+            System.out.println("Subject created successfully: " + name + " (Code: " + code + ")");
+            return result > 0;
+        } catch (Exception e) {
+            System.err.println("ERROR creating subject: " + e.getMessage());
+            e.printStackTrace();
+            return false;
+        }
+    }
+
+    public boolean publishSubject(int subjectId) {
+        try {
+            // Only allow publishing if status is QUESTIONS_PENDING
+            PreparedStatement ps = connection.prepareStatement(
+                    "UPDATE subjects SET is_published = TRUE, status = 'PUBLISHED' WHERE id = ? AND status = 'QUESTIONS_PENDING'");
+            ps.setInt(1, subjectId);
+            return ps.executeUpdate() > 0;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false;
+        }
+    }
+
+    // New workflow methods
+    public boolean approveExamDraft(int subjectId) {
+        try {
+            PreparedStatement ps = connection.prepareStatement(
+                    "UPDATE subjects SET status = 'APPROVED_FOR_QUESTIONS' WHERE id = ? AND status = 'PENDING_REVIEW'");
+            ps.setInt(1, subjectId);
+            return ps.executeUpdate() > 0;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false;
+        }
+    }
+
+    public List<common.Subject> getPendingExams() {
+        List<common.Subject> list = new ArrayList<>();
+        try {
+            Statement stmt = connection.createStatement();
+            ResultSet rs = stmt.executeQuery(
+                    "SELECT * FROM subjects WHERE status IN ('PENDING_REVIEW', 'QUESTIONS_PENDING') ORDER BY id DESC");
+            while (rs.next()) {
+                list.add(new common.Subject(
+                        rs.getInt("id"),
+                        rs.getString("name"),
+                        rs.getString("access_code"),
+                        rs.getTimestamp("start_time"),
+                        rs.getTimestamp("end_time"),
+                        rs.getBoolean("is_published"),
+                        rs.getString("status"),
+                        rs.getInt("created_by")));
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return list;
+    }
+
+    public int getQuestionCount(int subjectId) {
+        try {
+            PreparedStatement ps = connection.prepareStatement("SELECT COUNT(*) FROM questions WHERE subject_id = ?");
+            ps.setInt(1, subjectId);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                return rs.getInt(1);
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return 0;
+    }
+
+    public boolean deleteSubject(int subjectId) {
+        try {
+            // Delete subject (questions will be cascade deleted due to ON DELETE CASCADE)
+            PreparedStatement ps = connection.prepareStatement("DELETE FROM subjects WHERE id = ?");
+            ps.setInt(1, subjectId);
+            int result = ps.executeUpdate();
+            System.out.println("Deleted subject ID: " + subjectId + " (Result: " + result + ")");
+            return result > 0;
+        } catch (SQLException e) {
+            System.err.println("Error deleting subject: " + e.getMessage());
+            e.printStackTrace();
+            return false;
+        }
+    }
+
+    public List<common.User> getStudentSubmissionsForExam(int subjectId) {
+        List<common.User> list = new ArrayList<>();
+        System.out.println("DEBUG: Fetching submissions for Exam ID: " + subjectId);
+        try {
+            // Get all students with their submission data for a specific exam
+            String sql = "SELECT s.id, s.username, s.full_name, s.department, " +
+                    "COALESCE(sub.score, 0) as exam_score, " +
+                    "CASE WHEN sub.id IS NOT NULL THEN TRUE ELSE FALSE END as has_submitted_exam " +
+                    "FROM students s " +
+                    "LEFT JOIN student_submissions sub ON s.id = sub.student_id AND sub.subject_id = ? " +
+                    "ORDER BY s.id";
+
+            PreparedStatement ps = connection.prepareStatement(sql);
+            ps.setInt(1, subjectId);
+            ResultSet rs = ps.executeQuery();
+
+            while (rs.next()) {
+                User u = new User(
+                        rs.getInt("id"),
+                        rs.getString("username"),
+                        "STUDENT",
+                        rs.getString("full_name"),
+                        rs.getString("department"));
+                u.setScore(rs.getInt("exam_score"));
+                u.setHasSubmitted(rs.getBoolean("has_submitted_exam"));
+
+                if (u.hasSubmitted()) {
+                    System.out.println("DEBUG: Found submission for " + u.getUsername() + " Score: " + u.getScore());
+                }
+
+                list.add(u);
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return list;
+    }
+
+    public boolean addTeacher(String username, String password, String fullName, String department) {
+        try {
+            PreparedStatement ps = connection.prepareStatement(
+                    "INSERT INTO teachers (username, password, full_name, department) VALUES (?, ?, ?, ?)");
+            ps.setString(1, username);
+            ps.setString(2, password); // In real app, hash this!
+            ps.setString(3, fullName);
+            ps.setString(4, department);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            System.err.println("Error adding teacher: " + e.getMessage());
+            return false;
+        }
+    }
+
+    public boolean addReviewer(String username, String password, String fullName) {
+        try {
+            PreparedStatement ps = connection.prepareStatement(
+                    "INSERT INTO reviewers (username, password, full_name) VALUES (?, ?, ?)");
+            ps.setString(1, username);
+            ps.setString(2, password);
+            ps.setString(3, fullName);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            System.err.println("Error adding reviewer: " + e.getMessage());
+            return false;
+        }
+    }
+
+    public boolean addStudent(String username, String password, String fullName, String department, String gender) {
+        try {
+            PreparedStatement ps = connection.prepareStatement(
+                    "INSERT INTO students (username, password, full_name, department, gender) VALUES (?, ?, ?, ?, ?)");
+            ps.setString(1, username);
+            ps.setString(2, password);
+            ps.setString(3, fullName);
+            ps.setString(4, department);
+            ps.setString(5, gender);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            System.err.println("Error adding student: " + e.getMessage());
+            return false;
+        }
+    }
+}

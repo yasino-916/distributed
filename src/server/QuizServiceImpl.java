@@ -69,7 +69,14 @@ public class QuizServiceImpl extends UnicastRemoteObject implements QuizService 
     @Override
     public int submitMockQuiz(int userId, int subjectId, Map<Integer, String> answers) throws RemoteException {
         System.out.println("User " + userId + " submitted quiz for Subject " + subjectId);
-        int score = dbManager.calculateScore(userId, subjectId, answers);
+        int score = 0;
+        try {
+            score = dbManager.calculateScore(userId, subjectId, answers);
+        } catch (java.sql.SQLException e) {
+            e.printStackTrace();
+            throw new RemoteException("Submission Failed: " + e.getMessage());
+        }
+
         logResultToFile(userId, score);
 
         // Broadcast to Replicas
@@ -140,9 +147,9 @@ public class QuizServiceImpl extends UnicastRemoteObject implements QuizService 
     }
 
     @Override
-    public boolean resetStudentSubmission(int studentId) throws RemoteException {
-        System.out.println("Admin resetting submission for Student ID: " + studentId);
-        return dbManager.resetStudent(studentId);
+    public boolean resetStudentSubmission(int studentId, int subjectId) throws RemoteException {
+        System.out.println("Admin resetting submission for Student ID: " + studentId + " Subject ID: " + subjectId);
+        return dbManager.resetStudentSubmissionForSubject(studentId, subjectId);
     }
 
     @Override
@@ -158,5 +165,52 @@ public class QuizServiceImpl extends UnicastRemoteObject implements QuizService 
     @Override
     public java.util.List<String> getAllResults() throws RemoteException {
         return new java.util.ArrayList<>(); // Legacy method stub
+    }
+
+    // New Admin Review Workflow Methods
+    @Override
+    public boolean approveExamDraft(int subjectId) throws RemoteException {
+        return dbManager.approveExamDraft(subjectId);
+    }
+
+    @Override
+    public List<common.Subject> getPendingExams() throws RemoteException {
+        return dbManager.getPendingExams();
+    }
+
+    @Override
+    public int getQuestionCount(int subjectId) throws RemoteException {
+        return dbManager.getQuestionCount(subjectId);
+    }
+
+    @Override
+    public boolean deleteSubject(int subjectId) throws RemoteException {
+        return dbManager.deleteSubject(subjectId);
+    }
+
+    @Override
+    public List<common.User> getStudentSubmissionsForExam(int subjectId) throws RemoteException {
+        return dbManager.getStudentSubmissionsForExam(subjectId);
+    }
+
+    // New Admin User Management
+    @Override
+    public boolean addTeacher(String username, String password, String fullName, String department)
+            throws RemoteException {
+        System.out.println("Admin adding teacher: " + username);
+        return dbManager.addTeacher(username, password, fullName, department);
+    }
+
+    @Override
+    public boolean addReviewer(String username, String password, String fullName) throws RemoteException {
+        System.out.println("Admin adding reviewer: " + username);
+        return dbManager.addReviewer(username, password, fullName);
+    }
+
+    @Override
+    public boolean addStudent(String username, String password, String fullName, String department, String gender)
+            throws RemoteException {
+        System.out.println("Admin adding student: " + username);
+        return dbManager.addStudent(username, password, fullName, department, gender);
     }
 }

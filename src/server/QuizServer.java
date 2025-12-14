@@ -72,9 +72,10 @@ public class QuizServer extends UnicastRemoteObject implements ElectionService {
 
     @Override
     public void startElection(int senderId) throws RemoteException {
-        // If I have a higher ID than sender, I take over the election
-        if (this.nodeId > senderId) {
-            System.out.println("Received Election msg from " + senderId + ". I have higher ID. Taking over.");
+        // If I have a LOWER ID than sender, I take over the election (Priority to Node
+        // 1)
+        if (this.nodeId < senderId) {
+            System.out.println("Received Election msg from " + senderId + ". I have LOWER ID. Taking over.");
             startElectionRoutine();
         }
     }
@@ -103,7 +104,8 @@ public class QuizServer extends UnicastRemoteObject implements ElectionService {
         isCoordinator = true; // Assume I win until proven otherwise
 
         for (int id : allNodes) {
-            if (id > this.nodeId) {
+            // Look for anyone with a LOWER ID (higher priority)
+            if (id < this.nodeId) {
                 try {
                     String targetHost = config.getProperty("node." + id).split(":")[0];
                     int targetPort = Integer.parseInt(config.getProperty("node." + id).split(":")[1]);
@@ -130,9 +132,9 @@ public class QuizServer extends UnicastRemoteObject implements ElectionService {
             currentLeaderId = nodeId;
             isCoordinator = true;
 
-            // Announce to lower nodes
+            // Announce to other nodes (who have HIGHER IDs)
             for (int id : allNodes) {
-                if (id < this.nodeId) {
+                if (id > this.nodeId) {
                     try {
                         String targetHost = config.getProperty("node." + id).split(":")[0];
                         int targetPort = Integer.parseInt(config.getProperty("node." + id).split(":")[1]);

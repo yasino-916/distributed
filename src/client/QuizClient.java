@@ -160,10 +160,26 @@ public class QuizClient extends JFrame {
     private JPanel createLoadingPanel() {
         JPanel p = new JPanel(new BorderLayout());
         p.setBackground(CLR_BG);
+
         JLabel l = new JLabel("Loading...", SwingConstants.CENTER);
         l.setForeground(CLR_FG);
         l.setFont(new Font("Segoe UI", Font.BOLD, 18));
-        p.add(l);
+        p.add(l, BorderLayout.CENTER);
+
+        // Add back button for students who might get stuck
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
+        buttonPanel.setBackground(CLR_BG);
+        JButton backBtn = createStyledButton("← Back");
+        backBtn.addActionListener(e -> {
+            if (currentUser != null && "STUDENT".equalsIgnoreCase(currentUser.getRole())) {
+                loadSubjectSelection();
+            } else {
+                cardLayout.show(mainPanel, "LOGIN");
+            }
+        });
+        buttonPanel.add(backBtn);
+        p.add(buttonPanel, BorderLayout.SOUTH);
+
         return p;
     }
 
@@ -173,7 +189,7 @@ public class QuizClient extends JFrame {
         GridBagConstraints gbc = new GridBagConstraints();
         gbc.insets = new Insets(10, 10, 10, 10);
 
-        JLabel title = new JLabel("Student Login");
+        JLabel title = new JLabel("Quiz System Login");
         title.setFont(new Font("Segoe UI", Font.BOLD, 28));
         title.setForeground(CLR_FG);
 
@@ -218,14 +234,16 @@ public class QuizClient extends JFrame {
             SwingUtilities.invokeLater(() -> {
                 if (user != null) {
                     currentUser = user;
-                    if ("TEACHER".equalsIgnoreCase(user.getRole())) {
-                        loadTeacherDashboard();
-                    } else if ("CREATOR".equalsIgnoreCase(user.getRole())) {
+                    // Route based on role
+                    if ("ADMIN".equalsIgnoreCase(user.getRole())) {
+                        loadAdminDashboard();
+                    } else if ("REVIEWER".equalsIgnoreCase(user.getRole())) {
+                        loadReviewerDashboard();
+                    } else if ("TEACHER".equalsIgnoreCase(user.getRole())) {
                         loadCreatorDashboard();
-                    } else if (user.hasSubmitted()) {
-                        JOptionPane.showMessageDialog(this,
-                                "You have already submitted this quiz.\nContact Admin to retake.");
                     } else {
+                        // Students always go to subject selection
+                        // Per-exam submission check happens when they enter a course code
                         loadSubjectSelection();
                     }
                 } else if (service != null) {
@@ -265,29 +283,100 @@ public class QuizClient extends JFrame {
 
         header.add(titleLbl, BorderLayout.WEST);
         header.add(logoutBtn, BorderLayout.EAST);
-        panel.add(header, BorderLayout.NORTH);
 
-        // Content
-        JPanel content = new JPanel(new GridBagLayout());
-        content.setBackground(CLR_BG);
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(10, 10, 10, 10);
-        gbc.fill = GridBagConstraints.HORIZONTAL;
+        // Create top container for header
+        JPanel topContainer = new JPanel();
+        topContainer.setLayout(new BoxLayout(topContainer, BoxLayout.Y_AXIS));
+        topContainer.setBackground(CLR_BG);
+        topContainer.add(header);
+
+        // Toolbar
+        JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 15, 10));
+        toolbar.setBackground(CLR_BG);
 
         JButton createSubjBtn = createStyledButton("Create New Exam (Draft)");
         JButton addQueBtn = createStyledButton("Add Question to Exam");
+        JButton refreshBtn = createStyledButton("Refresh");
 
         createSubjBtn.addActionListener(e -> showCreateSubjectDialog());
         addQueBtn.addActionListener(e -> showAddQuestionDialog());
 
-        gbc.gridx = 0;
-        gbc.gridy = 0;
-        content.add(createSubjBtn, gbc);
+        toolbar.add(createSubjBtn);
+        toolbar.add(addQueBtn);
+        toolbar.add(refreshBtn);
 
-        gbc.gridy = 1;
-        content.add(addQueBtn, gbc);
+        topContainer.add(toolbar);
+        panel.add(topContainer, BorderLayout.NORTH);
 
-        panel.add(content, BorderLayout.CENTER);
+        // Table showing creator's exams
+        String[] columns = { "ID", "Exam Name", "Code", "Status", "Questions", "Next Step" };
+        javax.swing.table.DefaultTableModel model = new javax.swing.table.DefaultTableModel(columns, 0) {
+            public boolean isCellEditable(int row, int column) {
+                return false;
+            }
+        };
+        JTable table = new JTable(model);
+        table.setRowHeight(30);
+        table.setFont(new Font("Segoe UI", Font.PLAIN, 14));
+        table.setShowGrid(true);
+        table.setGridColor(Color.LIGHT_GRAY);
+        table.getTableHeader().setFont(new Font("Segoe UI", Font.BOLD, 14));
+        table.getTableHeader().setBackground(new Color(220, 220, 220));
+        table.getTableHeader().setForeground(Color.BLACK);
+
+        JScrollPane scroll = new JScrollPane(table);
+        scroll.setBorder(new EmptyBorder(10, 10, 10, 10));
+        panel.add(scroll, BorderLayout.CENTER);
+
+        // Refresh logic
+        java.awt.event.ActionListener refreshAction = e -> {
+            new Thread(() -> {
+                try {
+                    List<common.Subject> exams = executeSafe(() -> service.getSubjectsByCreator(currentUser.getId()));
+                    SwingUtilities.invokeLater(() -> {
+                        model.setRowCount(0);
+                        if (exams != null) {
+                            for (common.Subject exam : exams) {
+                                int qCount = executeSafe(() -> service.getQuestionCount(exam.getId()));
+                                String nextStep = "";
+                                switch (exam.getStatus()) {
+                                    case "PENDING_REVIEW":
+                                        nextStep = "Waiting for Reviewer approval";
+                                        break;
+                                    case "APPROVED_FOR_QUESTIONS":
+                                        nextStep = "Add questions";
+                                        break;
+                                    case "QUESTIONS_PENDING":
+                                        nextStep = "Waiting for Reviewer to publish";
+                                        break;
+                                    case "PUBLISHED":
+                                        nextStep = "Live for students";
+                                        break;
+                                    default:
+                                        nextStep = exam.getStatus();
+                                }
+                                model.addRow(new Object[] {
+                                        exam.getId(),
+                                        exam.getName(),
+                                        exam.getAccessCode(),
+                                        exam.getStatus(),
+                                        qCount,
+                                        nextStep
+                                });
+                            }
+                        }
+                    });
+                } catch (Exception ex) {
+                    ex.printStackTrace();
+                }
+            }).start();
+        };
+
+        refreshBtn.addActionListener(refreshAction);
+
+        // Initial load
+        refreshBtn.doClick();
+
         return panel;
     }
 
@@ -307,7 +396,7 @@ public class QuizClient extends JFrame {
                             currentUser.getId()));
                     SwingUtilities.invokeLater(() -> {
                         if (success)
-                            JOptionPane.showMessageDialog(this, "Draft Exam Created!\nWait for Admin to Publish.");
+                            JOptionPane.showMessageDialog(this, "Draft Exam Created!\nWait for Reviewer to Approve.");
                         else
                             JOptionPane.showMessageDialog(this, "Failed to create exam (Duplicate code?)");
                     });
@@ -367,6 +456,24 @@ public class QuizClient extends JFrame {
     }
 
     private JPanel createSubjectSelectionPanel() {
+        JPanel mainPanel = new JPanel(new BorderLayout());
+        mainPanel.setBackground(CLR_BG);
+
+        // Header with logout button
+        JPanel header = new JPanel(new BorderLayout());
+        header.setBackground(CLR_BG);
+        header.setBorder(new EmptyBorder(10, 10, 10, 10));
+
+        JButton logoutBtn = new JButton("Logout");
+        logoutBtn.setBackground(new Color(231, 76, 60));
+        logoutBtn.setForeground(Color.WHITE);
+        logoutBtn.setFocusPainted(false);
+        logoutBtn.addActionListener(e -> cardLayout.show(this.mainPanel, "LOGIN"));
+
+        header.add(logoutBtn, BorderLayout.EAST);
+        mainPanel.add(header, BorderLayout.NORTH);
+
+        // Center panel with form
         JPanel panel = new JPanel(new GridBagLayout());
         panel.setBackground(CLR_BG);
         GridBagConstraints gbc = new GridBagConstraints();
@@ -409,7 +516,8 @@ public class QuizClient extends JFrame {
         gbc.gridy = 3;
         panel.add(startBtn, gbc);
 
-        return panel;
+        mainPanel.add(panel, BorderLayout.CENTER);
+        return mainPanel;
     }
 
     private void startExamFlow(String code) {
@@ -422,6 +530,11 @@ public class QuizClient extends JFrame {
                 if (subject != null) {
                     // 2. Load Questions for this Subject
                     loadQuiz(subject);
+                } else {
+                    // Validation failed (invalid code or already completed)
+                    SwingUtilities.invokeLater(() -> {
+                        cardLayout.show(mainPanel, "SUBJECT_SELECT");
+                    });
                 }
             } catch (Exception e) {
                 // Error handled in executeSafe usually, but for logic errors:
@@ -434,30 +547,290 @@ public class QuizClient extends JFrame {
         }).start();
     }
 
-    // ---------------- TEACHER DASHBOARD (Fixed Layout & Light Theme)
-    // ----------------
-    private void loadTeacherDashboard() {
+    // ---------------- REVIEWER DASHBOARD ----------------
+    private void loadReviewerDashboard() {
         cardLayout.show(mainPanel, "LOADING");
         new Thread(() -> {
             SwingUtilities.invokeLater(() -> {
-                mainPanel.add(createTeacherPanel(), "TEACHER");
-                cardLayout.show(mainPanel, "TEACHER");
+                mainPanel.add(createReviewerPanel(), "REVIEWER");
+                cardLayout.show(mainPanel, "REVIEWER");
             });
         }).start();
     }
 
-    private JPanel createTeacherPanel() {
-        JPanel panel = new JPanel(new BorderLayout(10, 10)); // Add gap
+    private JPanel createReviewerPanel() {
+        JPanel panel = new JPanel(new BorderLayout());
         panel.setBackground(CLR_BG);
-
-        // 1. TOP CONTAINER (Header + Toolbar)
-        JPanel topContainer = new JPanel();
-        topContainer.setLayout(new BoxLayout(topContainer, BoxLayout.Y_AXIS));
-        topContainer.setBackground(CLR_BG);
 
         // Header
         JPanel header = new JPanel(new BorderLayout());
-        header.setBackground(new Color(230, 230, 230)); // Light Grey Header
+        header.setBackground(new Color(230, 230, 230));
+        header.setBorder(new EmptyBorder(15, 20, 15, 20));
+
+        JLabel titleLbl = new JLabel("Exam Reviewer Dashboard");
+        titleLbl.setFont(new Font("Segoe UI", Font.BOLD, 22));
+        titleLbl.setForeground(Color.DARK_GRAY);
+
+        JButton logoutBtn = new JButton("Logout");
+        logoutBtn.setBackground(new Color(231, 76, 60));
+        logoutBtn.setForeground(Color.WHITE);
+        logoutBtn.setFocusPainted(false);
+        logoutBtn.addActionListener(e -> cardLayout.show(mainPanel, "LOGIN"));
+
+        header.add(titleLbl, BorderLayout.WEST);
+        header.add(logoutBtn, BorderLayout.EAST);
+
+        // Toolbar
+        JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 15, 10));
+        toolbar.setBackground(CLR_BG);
+
+        JButton refreshBtn = createStyledButton("Refresh");
+        toolbar.add(refreshBtn);
+
+        JPanel topContainer = new JPanel();
+        topContainer.setLayout(new BoxLayout(topContainer, BoxLayout.Y_AXIS));
+        topContainer.setBackground(CLR_BG);
+        topContainer.add(header);
+        topContainer.add(toolbar);
+
+        panel.add(topContainer, BorderLayout.NORTH);
+
+        // Table showing pending exams
+        String[] columns = { "ID", "Exam Name", "Code", "Status", "Questions", "Next Step" };
+        javax.swing.table.DefaultTableModel model = new javax.swing.table.DefaultTableModel(columns, 0) {
+            public boolean isCellEditable(int row, int column) {
+                return false;
+            }
+        };
+        JTable table = new JTable(model);
+        table.setRowHeight(30);
+        table.setFont(new Font("Segoe UI", Font.PLAIN, 14));
+        table.setShowGrid(true);
+        table.setGridColor(Color.LIGHT_GRAY);
+        table.getTableHeader().setFont(new Font("Segoe UI", Font.BOLD, 14));
+        table.getTableHeader().setBackground(new Color(220, 220, 220));
+        table.getTableHeader().setForeground(Color.BLACK);
+
+        JScrollPane scroll = new JScrollPane(table);
+        scroll.setBorder(new EmptyBorder(10, 10, 10, 10));
+        panel.add(scroll, BorderLayout.CENTER);
+
+        // Action Panel
+        JPanel actionPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 15, 10));
+        actionPanel.setBackground(CLR_BG);
+
+        JButton approveBtn = createStyledButton("Approve Draft");
+        approveBtn.setBackground(new Color(46, 204, 113)); // Green
+
+        JButton viewQuestionsBtn = createStyledButton("View Questions");
+        viewQuestionsBtn.setBackground(new Color(52, 152, 219)); // Blue
+
+        JButton publishBtn = createStyledButton("Publish Exam");
+        publishBtn.setBackground(new Color(155, 89, 182)); // Purple
+
+        JButton deleteBtn = createStyledButton("Delete Exam");
+        deleteBtn.setBackground(new Color(231, 76, 60)); // Red
+
+        actionPanel.add(approveBtn);
+        actionPanel.add(viewQuestionsBtn);
+        actionPanel.add(publishBtn);
+        actionPanel.add(deleteBtn);
+        panel.add(actionPanel, BorderLayout.SOUTH);
+
+        // Refresh logic
+        java.awt.event.ActionListener refreshAction = e -> {
+            new Thread(() -> {
+                try {
+                    List<common.Subject> exams = executeSafe(() -> service.getPendingExams());
+                    SwingUtilities.invokeLater(() -> {
+                        model.setRowCount(0);
+                        if (exams != null) {
+                            for (common.Subject exam : exams) {
+                                int qCount = executeSafe(() -> service.getQuestionCount(exam.getId()));
+                                String nextStep = "";
+                                switch (exam.getStatus()) {
+                                    case "PENDING_REVIEW":
+                                        nextStep = "Needs Approval";
+                                        break;
+                                    case "APPROVED_FOR_QUESTIONS":
+                                        nextStep = "Creator adding questions";
+                                        break;
+                                    case "QUESTIONS_PENDING":
+                                        nextStep = "Ready to Publish";
+                                        break;
+                                    case "PUBLISHED":
+                                        nextStep = "Live for students";
+                                        break;
+                                    default:
+                                        nextStep = exam.getStatus();
+                                }
+                                model.addRow(new Object[] {
+                                        exam.getId(),
+                                        exam.getName(),
+                                        exam.getAccessCode(),
+                                        exam.getStatus(),
+                                        qCount,
+                                        nextStep
+                                });
+                            }
+                        }
+                    });
+                } catch (Exception ex) {
+                    ex.printStackTrace();
+                }
+            }).start();
+        };
+
+        refreshBtn.addActionListener(refreshAction);
+
+        // Approve Draft Action
+        approveBtn.addActionListener(e -> {
+            int row = table.getSelectedRow();
+            if (row != -1) {
+                int id = (int) model.getValueAt(row, 0);
+                String name = (String) model.getValueAt(row, 1);
+                String status = (String) model.getValueAt(row, 3);
+
+                if (!status.equals("PENDING_REVIEW")) {
+                    JOptionPane.showMessageDialog(panel, "Only exams with PENDING_REVIEW status can be approved.");
+                    return;
+                }
+
+                int confirm = JOptionPane.showConfirmDialog(panel,
+                        "Approve exam '" + name + "'?\nCreator will be able to add questions.",
+                        "Confirm Approval",
+                        JOptionPane.YES_NO_OPTION);
+                if (confirm == JOptionPane.YES_OPTION) {
+                    new Thread(() -> {
+                        boolean success = executeSafe(() -> service.approveExamDraft(id));
+                        SwingUtilities.invokeLater(() -> {
+                            if (success) {
+                                JOptionPane.showMessageDialog(panel, "Exam approved! Creator can now add questions.");
+                                refreshBtn.doClick();
+                            } else {
+                                JOptionPane.showMessageDialog(panel, "Failed to approve exam.");
+                            }
+                        });
+                    }).start();
+                }
+            } else {
+                JOptionPane.showMessageDialog(panel, "Select an exam first.");
+            }
+        });
+
+        // View Questions Action
+        viewQuestionsBtn.addActionListener(e -> {
+            int row = table.getSelectedRow();
+            if (row != -1) {
+                int examId = (int) model.getValueAt(row, 0);
+                String examName = (String) model.getValueAt(row, 1);
+                new Thread(() -> {
+                    List<Question> questions = executeSafe(() -> service.getQuestions(examId));
+                    SwingUtilities.invokeLater(() -> showQuestionsDialog(examName, questions));
+                }).start();
+            } else {
+                JOptionPane.showMessageDialog(panel, "Select an exam first.");
+            }
+        });
+
+        // Publish Exam Action
+        publishBtn.addActionListener(e -> {
+            int row = table.getSelectedRow();
+            if (row != -1) {
+                int id = (int) model.getValueAt(row, 0);
+                String name = (String) model.getValueAt(row, 1);
+                String status = (String) model.getValueAt(row, 3);
+                int qCount = (int) model.getValueAt(row, 4);
+
+                if (!status.equals("QUESTIONS_PENDING")) {
+                    JOptionPane.showMessageDialog(panel, "Only exams with QUESTIONS_PENDING status can be published.");
+                    return;
+                }
+
+                if (qCount == 0) {
+                    JOptionPane.showMessageDialog(panel, "Cannot publish exam with no questions!");
+                    return;
+                }
+
+                int confirm = JOptionPane.showConfirmDialog(panel,
+                        "Publish exam '" + name + "' with " + qCount
+                                + " questions?\nStudents will be able to access it.",
+                        "Confirm Publish",
+                        JOptionPane.YES_NO_OPTION);
+                if (confirm == JOptionPane.YES_OPTION) {
+                    new Thread(() -> {
+                        boolean success = executeSafe(() -> service.publishSubject(id));
+                        SwingUtilities.invokeLater(() -> {
+                            if (success) {
+                                JOptionPane.showMessageDialog(panel, "Exam published successfully!");
+                                refreshBtn.doClick();
+                            } else {
+                                JOptionPane.showMessageDialog(panel, "Failed to publish exam.");
+                            }
+                        });
+                    }).start();
+                }
+            } else {
+                JOptionPane.showMessageDialog(panel, "Select an exam first.");
+            }
+        });
+
+        // Delete Exam Action
+        deleteBtn.addActionListener(e -> {
+            int row = table.getSelectedRow();
+            if (row != -1) {
+                int id = (int) model.getValueAt(row, 0);
+                String name = (String) model.getValueAt(row, 1);
+
+                int confirm = JOptionPane.showConfirmDialog(panel,
+                        "DELETE exam '" + name
+                                + "'?\nThis action cannot be undone!\nAll questions will also be deleted.",
+                        "Confirm Delete",
+                        JOptionPane.YES_NO_OPTION,
+                        JOptionPane.WARNING_MESSAGE);
+                if (confirm == JOptionPane.YES_OPTION) {
+                    new Thread(() -> {
+                        boolean success = executeSafe(() -> service.deleteSubject(id));
+                        SwingUtilities.invokeLater(() -> {
+                            if (success) {
+                                JOptionPane.showMessageDialog(panel, "Exam deleted successfully.");
+                                refreshBtn.doClick();
+                            } else {
+                                JOptionPane.showMessageDialog(panel, "Failed to delete exam.");
+                            }
+                        });
+                    }).start();
+                }
+            } else {
+                JOptionPane.showMessageDialog(panel, "Select an exam first.");
+            }
+        });
+
+        // Initial load
+        refreshBtn.doClick();
+
+        return panel;
+    }
+
+    // ---------------- ADMIN DASHBOARD (Renamed from Teacher)
+    // ----------------
+    private void loadAdminDashboard() {
+        cardLayout.show(mainPanel, "LOADING");
+        new Thread(() -> {
+            SwingUtilities.invokeLater(() -> {
+                mainPanel.add(createAdminPanel(), "ADMIN");
+                cardLayout.show(mainPanel, "ADMIN");
+            });
+        }).start();
+    }
+
+    private JPanel createAdminPanel() {
+        JPanel panel = new JPanel(new BorderLayout(10, 10));
+        panel.setBackground(CLR_BG);
+
+        // Header
+        JPanel header = new JPanel(new BorderLayout());
+        header.setBackground(new Color(230, 230, 230));
         header.setBorder(new EmptyBorder(15, 20, 15, 20));
 
         JLabel titleLbl = new JLabel("Admin Dashboard");
@@ -472,52 +845,60 @@ public class QuizClient extends JFrame {
 
         header.add(titleLbl, BorderLayout.WEST);
         header.add(logoutBtn, BorderLayout.EAST);
-        header.setMaximumSize(new Dimension(Integer.MAX_VALUE, 60));
+        panel.add(header, BorderLayout.NORTH);
 
-        // Toolbar
-        JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 15, 10)); // Flow with gap
+        // Tabbed Pane
+        JTabbedPane tabbedPane = new JTabbedPane();
+        tabbedPane.setFont(new Font("Segoe UI", Font.BOLD, 14));
+
+        // Tab 1: Students
+        tabbedPane.addTab("Students", createStudentsTab());
+
+        // Tab 2: Add User
+        tabbedPane.addTab("Add User", createAddUserTab());
+
+        panel.add(tabbedPane, BorderLayout.CENTER);
+        return panel;
+    }
+
+    private JPanel createStudentsTab() {
+        JPanel panel = new JPanel(new BorderLayout(10, 10));
+        panel.setBackground(CLR_BG);
+
+        // Optimized Layout
+        JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 10)); // Reduced gap
         toolbar.setBackground(CLR_BG);
 
-        JTextField searchField = new JTextField(15);
+        // Exam Selector
+        JLabel examLabel = new JLabel("Exam:");
+        JComboBox<common.Subject> examSelector = new JComboBox<>();
+        examSelector.setPreferredSize(new Dimension(180, 30)); // Slightly smaller
+
+        JCheckBox showSubmittedOnly = new JCheckBox("Show Submitted Only");
+        showSubmittedOnly.setBackground(CLR_BG);
+
+        JTextField searchField = new JTextField(10); // Smaller width
         JButton searchBtn = createStyledButton("Search");
-        JButton rankBtn = createStyledButton("Rank Score");
+        JButton rankBtn = createStyledButton("Rank"); // Shorter text
         JButton refreshBtn = createStyledButton("Refresh");
-        JButton allowRetryBtn = createStyledButton("Reset Student");
+        JButton allowRetryBtn = createStyledButton("Reset"); // Shorter text
         allowRetryBtn.setBackground(new Color(46, 204, 113)); // Green
 
+        toolbar.add(examLabel);
+        toolbar.add(examSelector);
+        toolbar.add(new JSeparator(SwingConstants.VERTICAL));
         toolbar.add(new JLabel("Find:"));
         toolbar.add(searchField);
         toolbar.add(searchBtn);
         toolbar.add(new JSeparator(SwingConstants.VERTICAL));
+        toolbar.add(showSubmittedOnly); // Add to toolbar
         toolbar.add(rankBtn);
-        toolbar.add(refreshBtn);
         toolbar.add(allowRetryBtn);
+        toolbar.add(refreshBtn);
 
-        JButton publishBtn = createStyledButton("Publish Exam");
-        publishBtn.setBackground(new Color(155, 89, 182)); // Purple
-        publishBtn.addActionListener(e -> {
-            String sIdStr = JOptionPane.showInputDialog(panel, "Enter Subject ID to Publish:");
-            if (sIdStr != null && !sIdStr.trim().isEmpty()) {
-                new Thread(() -> {
-                    boolean success = executeSafe(() -> service.publishSubject(Integer.parseInt(sIdStr.trim())));
-                    SwingUtilities.invokeLater(() -> {
-                        if (success)
-                            JOptionPane.showMessageDialog(panel, "Exam Published Successfully!");
-                        else
-                            JOptionPane.showMessageDialog(panel, "Failed to Publish Exam (Invalid ID?)");
-                    });
-                }).start();
-            }
-        });
-        toolbar.add(publishBtn);
+        panel.add(toolbar, BorderLayout.NORTH);
 
-        toolbar.setMaximumSize(new Dimension(Integer.MAX_VALUE, 50));
-
-        topContainer.add(header);
-        topContainer.add(toolbar);
-        panel.add(topContainer, BorderLayout.NORTH);
-
-        // 3. Table
+        // Table
         String[] columns = { "ID", "Student ID", "Name", "Department", "Score", "Submitted?" };
         javax.swing.table.DefaultTableModel model = new javax.swing.table.DefaultTableModel(columns, 0) {
             public boolean isCellEditable(int row, int column) {
@@ -537,15 +918,35 @@ public class QuizClient extends JFrame {
         scroll.setBorder(new EmptyBorder(0, 10, 10, 10));
         panel.add(scroll, BorderLayout.CENTER);
 
+        // Load Exams into Selector
+        new Thread(() -> {
+            List<common.Subject> exams = executeSafe(() -> service.getAllSubjects());
+            SwingUtilities.invokeLater(() -> {
+                if (exams != null) {
+                    for (common.Subject exam : exams) {
+                        examSelector.addItem(exam);
+                    }
+                }
+            });
+        }).start();
+
         // Logic
         java.awt.event.ActionListener refreshAction = e -> {
+            common.Subject selectedExam = (common.Subject) examSelector.getSelectedItem();
+            if (selectedExam == null) {
+                // Determine if this was an automatic refresh or user interaction
+                // For safety, just return silently or log, but user sees "Select Exam"
+                return;
+            }
+
             new Thread(() -> {
                 try {
-                    List<User> students = executeSafe(() -> service.getAllStudents());
+                    List<User> students = executeSafe(() -> service.getStudentSubmissionsForExam(selectedExam.getId()));
                     SwingUtilities.invokeLater(() -> {
                         model.setRowCount(0);
                         if (students != null) {
-                            String query = searchField.getText().toLowerCase();
+                            String query = searchField.getText().trim().toLowerCase(); // TRIMMED
+                            boolean onlySubmitted = showSubmittedOnly.isSelected(); // Checkbox state
 
                             if (e.getSource() == rankBtn) {
                                 students.sort((s1, s2) -> Integer.compare(s2.getScore(), s1.getScore()));
@@ -554,8 +955,16 @@ public class QuizClient extends JFrame {
                             }
 
                             for (User s : students) {
-                                if (!query.isEmpty() && !s.getUsername().toLowerCase().contains(query)
-                                        && !s.getFullName().toLowerCase().contains(query)) {
+                                // Filter by Submitted Only
+                                if (onlySubmitted && !s.hasSubmitted()) {
+                                    continue;
+                                }
+
+                                // Null checks for safety
+                                String uname = s.getUsername() != null ? s.getUsername().toLowerCase() : "";
+                                String fname = s.getFullName() != null ? s.getFullName().toLowerCase() : "";
+
+                                if (!query.isEmpty() && !uname.contains(query) && !fname.contains(query)) {
                                     continue;
                                 }
                                 model.addRow(new Object[] { s.getId(), s.getUsername(), s.getFullName(),
@@ -571,18 +980,31 @@ public class QuizClient extends JFrame {
 
         refreshBtn.addActionListener(refreshAction);
         searchBtn.addActionListener(refreshAction);
+        searchField.addActionListener(refreshAction); // Enable Enter key
         rankBtn.addActionListener(refreshAction);
+        examSelector.addActionListener(refreshAction);
+        showSubmittedOnly.addActionListener(refreshAction); // Trigger on checkbox toggle
 
         allowRetryBtn.addActionListener(e -> {
             int row = table.getSelectedRow();
             if (row != -1) {
                 int id = (int) model.getValueAt(row, 0);
                 String name = (String) model.getValueAt(row, 2);
-                int confirm = JOptionPane.showConfirmDialog(panel, "Reset quiz for " + name + "?", "Confirm",
+
+                common.Subject selectedExam = (common.Subject) examSelector.getSelectedItem();
+                if (selectedExam == null) {
+                    JOptionPane.showMessageDialog(panel, "Please select an exam context first.");
+                    return;
+                }
+
+                int confirm = JOptionPane.showConfirmDialog(panel,
+                        "Reset submission for " + name + " in exam '" + selectedExam.getName() + "'?",
+                        "Confirm Reset",
                         JOptionPane.YES_NO_OPTION);
+
                 if (confirm == JOptionPane.YES_OPTION) {
                     new Thread(() -> {
-                        executeSafe(() -> service.resetStudentSubmission(id));
+                        executeSafe(() -> service.resetStudentSubmission(id, selectedExam.getId()));
                         refreshBtn.doClick();
                     }).start();
                 }
@@ -591,9 +1013,195 @@ public class QuizClient extends JFrame {
             }
         });
 
-        // Initial Load
-        refreshBtn.doClick();
         return panel;
+    }
+
+    private JPanel createAddUserTab() {
+        JPanel panel = new JPanel(new BorderLayout(10, 10));
+        panel.setBackground(CLR_BG);
+        panel.setBorder(new EmptyBorder(10, 10, 10, 10));
+
+        JTabbedPane tabs = new JTabbedPane();
+        tabs.addTab("New Teacher", createTeacherForm());
+        tabs.addTab("New Reviewer", createReviewerForm());
+        tabs.addTab("New Student", createStudentForm());
+
+        panel.add(tabs, BorderLayout.CENTER);
+        return panel;
+    }
+
+    private JPanel createTeacherForm() {
+        JPanel p = new JPanel(new GridBagLayout());
+        p.setBackground(Color.WHITE);
+        GridBagConstraints g = new GridBagConstraints();
+        g.insets = new Insets(10, 10, 10, 10);
+        g.anchor = GridBagConstraints.WEST;
+
+        JTextField userF = new JTextField(20);
+        JPasswordField passF = new JPasswordField(20);
+        JTextField nameF = new JTextField(20);
+        JTextField deptF = new JTextField(20);
+        JButton btn = createStyledButton("Create Teacher");
+
+        // UI Helper for rows
+        addFormRow(p, g, 0, "Username:", userF);
+        addFormRow(p, g, 1, "Password:", passF);
+        addFormRow(p, g, 2, "Full Name:", nameF);
+        addFormRow(p, g, 3, "Department:", deptF);
+
+        g.gridx = 1;
+        g.gridy = 4;
+        g.anchor = GridBagConstraints.EAST;
+        g.fill = GridBagConstraints.NONE;
+        p.add(btn, g);
+
+        btn.addActionListener(e -> {
+            String u = userF.getText().trim();
+            String pwd = new String(passF.getPassword());
+            String n = nameF.getText().trim();
+            String d = deptF.getText().trim();
+            if (u.isEmpty() || pwd.isEmpty()) {
+                JOptionPane.showMessageDialog(p, "Username and Password required.");
+                return;
+            }
+
+            new Thread(() -> {
+                boolean ok = executeSafe(() -> service.addTeacher(u, pwd, n, d));
+                SwingUtilities.invokeLater(() -> {
+                    if (ok) {
+                        JOptionPane.showMessageDialog(p, "Teacher Account Created!");
+                        userF.setText("");
+                        passF.setText("");
+                        nameF.setText("");
+                        deptF.setText("");
+                    } else {
+                        JOptionPane.showMessageDialog(p, "Failed to create account (Username taken?)");
+                    }
+                });
+            }).start();
+        });
+        return p;
+    }
+
+    private JPanel createReviewerForm() {
+        JPanel p = new JPanel(new GridBagLayout());
+        p.setBackground(Color.WHITE);
+        GridBagConstraints g = new GridBagConstraints();
+        g.insets = new Insets(10, 10, 10, 10);
+        g.anchor = GridBagConstraints.WEST;
+
+        JTextField userF = new JTextField(20);
+        JPasswordField passF = new JPasswordField(20);
+        JTextField nameF = new JTextField(20);
+        JButton btn = createStyledButton("Create Reviewer");
+
+        addFormRow(p, g, 0, "Username:", userF);
+        addFormRow(p, g, 1, "Password:", passF);
+        addFormRow(p, g, 2, "Full Name:", nameF);
+
+        g.gridx = 1;
+        g.gridy = 3;
+        g.anchor = GridBagConstraints.EAST;
+        p.add(btn, g);
+
+        btn.addActionListener(e -> {
+            String u = userF.getText().trim();
+            String pwd = new String(passF.getPassword());
+            String n = nameF.getText().trim();
+            if (u.isEmpty() || pwd.isEmpty()) {
+                JOptionPane.showMessageDialog(p, "Username and Password required.");
+                return;
+            }
+
+            new Thread(() -> {
+                boolean ok = executeSafe(() -> service.addReviewer(u, pwd, n));
+                SwingUtilities.invokeLater(() -> {
+                    if (ok) {
+                        JOptionPane.showMessageDialog(p, "Reviewer Account Created!");
+                        userF.setText("");
+                        passF.setText("");
+                        nameF.setText("");
+                    } else {
+                        JOptionPane.showMessageDialog(p, "Failed to create account (Username taken?)");
+                    }
+                });
+            }).start();
+        });
+        return p;
+    }
+
+    private JPanel createStudentForm() {
+        JPanel p = new JPanel(new GridBagLayout());
+        p.setBackground(Color.WHITE);
+        GridBagConstraints g = new GridBagConstraints();
+        g.insets = new Insets(10, 10, 10, 10);
+        g.anchor = GridBagConstraints.WEST;
+
+        JTextField userF = new JTextField(20);
+        JPasswordField passF = new JPasswordField(20);
+        JTextField nameF = new JTextField(20);
+        JTextField deptF = new JTextField(20);
+        String[] genders = { "Male", "Female" };
+        JComboBox<String> genderBox = new JComboBox<>(genders);
+
+        JButton btn = createStyledButton("Create Student");
+
+        addFormRow(p, g, 0, "Student ID (User):", userF);
+        addFormRow(p, g, 1, "Password:", passF);
+        addFormRow(p, g, 2, "Full Name:", nameF);
+        addFormRow(p, g, 3, "Department:", deptF);
+
+        g.gridx = 0;
+        g.gridy = 4;
+        JLabel l = new JLabel("Gender:");
+        l.setForeground(CLR_FG);
+        p.add(l, g);
+        g.gridx = 1;
+        p.add(genderBox, g);
+
+        g.gridx = 1;
+        g.gridy = 5;
+        g.anchor = GridBagConstraints.EAST;
+        p.add(btn, g);
+
+        btn.addActionListener(e -> {
+            String u = userF.getText().trim();
+            String pwd = new String(passF.getPassword());
+            String n = nameF.getText().trim();
+            String d = deptF.getText().trim();
+            String gen = (String) genderBox.getSelectedItem();
+
+            if (u.isEmpty() || pwd.isEmpty()) {
+                JOptionPane.showMessageDialog(p, "Username and Password required.");
+                return;
+            }
+
+            new Thread(() -> {
+                boolean ok = executeSafe(() -> service.addStudent(u, pwd, n, d, gen));
+                SwingUtilities.invokeLater(() -> {
+                    if (ok) {
+                        JOptionPane.showMessageDialog(p, "Student Account Created!");
+                        userF.setText("");
+                        passF.setText("");
+                        nameF.setText("");
+                        deptF.setText("");
+                    } else {
+                        JOptionPane.showMessageDialog(p, "Failed to create account (ID taken?)");
+                    }
+                });
+            }).start();
+        });
+        return p;
+    }
+
+    private void addFormRow(JPanel p, GridBagConstraints g, int row, String label, JComponent comp) {
+        g.gridx = 0;
+        g.gridy = row;
+        JLabel l = new JLabel(label);
+        l.setForeground(CLR_FG);
+        p.add(l, g);
+        g.gridx = 1;
+        p.add(comp, g);
     }
     // ---------------------------------------------------
 
@@ -745,6 +1353,78 @@ public class QuizClient extends JFrame {
                 }
             });
         }).start();
+    }
+
+    // Admin Question Viewer
+    private void showQuestionsDialog(String examName, List<Question> questions) {
+        JDialog dialog = new JDialog(this, "Questions for: " + examName, true);
+        dialog.setSize(700, 500);
+        dialog.setLocationRelativeTo(this);
+
+        JPanel mainPanel = new JPanel(new BorderLayout(10, 10));
+        mainPanel.setBackground(CLR_BG);
+        mainPanel.setBorder(new EmptyBorder(15, 15, 15, 15));
+
+        JLabel titleLbl = new JLabel("Review Questions (" + questions.size() + " total)");
+        titleLbl.setFont(new Font("Segoe UI", Font.BOLD, 18));
+        titleLbl.setForeground(CLR_FG);
+        mainPanel.add(titleLbl, BorderLayout.NORTH);
+
+        // Questions list
+        JPanel questionsPanel = new JPanel();
+        questionsPanel.setLayout(new BoxLayout(questionsPanel, BoxLayout.Y_AXIS));
+        questionsPanel.setBackground(Color.WHITE);
+
+        int qNum = 1;
+        for (Question q : questions) {
+            JPanel qPanel = new JPanel();
+            qPanel.setLayout(new BoxLayout(qPanel, BoxLayout.Y_AXIS));
+            qPanel.setBackground(Color.WHITE);
+            qPanel.setBorder(BorderFactory.createCompoundBorder(
+                    BorderFactory.createLineBorder(Color.LIGHT_GRAY, 1),
+                    new EmptyBorder(10, 10, 10, 10)));
+            qPanel.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+            JLabel qText = new JLabel("<html><b>Q" + qNum + ":</b> " + q.getText() + "</html>");
+            qText.setFont(new Font("Segoe UI", Font.PLAIN, 14));
+            qPanel.add(qText);
+
+            qPanel.add(Box.createVerticalStrut(8));
+
+            JLabel optA = new JLabel("  A) " + q.getOptionA());
+            JLabel optB = new JLabel("  B) " + q.getOptionB());
+            JLabel optC = new JLabel("  C) " + q.getOptionC());
+            JLabel optD = new JLabel("  D) " + q.getOptionD());
+
+            optA.setFont(new Font("Segoe UI", Font.PLAIN, 13));
+            optB.setFont(new Font("Segoe UI", Font.PLAIN, 13));
+            optC.setFont(new Font("Segoe UI", Font.PLAIN, 13));
+            optD.setFont(new Font("Segoe UI", Font.PLAIN, 13));
+
+            qPanel.add(optA);
+            qPanel.add(optB);
+            qPanel.add(optC);
+            qPanel.add(optD);
+
+            questionsPanel.add(qPanel);
+            questionsPanel.add(Box.createVerticalStrut(10));
+            qNum++;
+        }
+
+        JScrollPane scroll = new JScrollPane(questionsPanel);
+        scroll.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_ALWAYS);
+        mainPanel.add(scroll, BorderLayout.CENTER);
+
+        JButton closeBtn = createStyledButton("Close");
+        closeBtn.addActionListener(e -> dialog.dispose());
+
+        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
+        btnPanel.setBackground(CLR_BG);
+        btnPanel.add(closeBtn);
+        mainPanel.add(btnPanel, BorderLayout.SOUTH);
+
+        dialog.add(mainPanel);
+        dialog.setVisible(true);
     }
 
     // UI Helpers
