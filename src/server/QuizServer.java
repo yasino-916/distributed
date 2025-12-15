@@ -201,6 +201,9 @@ public class QuizServer extends UnicastRemoteObject implements ElectionService {
 
                 System.setProperty("java.rmi.server.hostname", publicIp);
                 System.out.println("DEBUG: RMI Hostname set to: " + publicIp);
+                System.out.println("------------------------------------------------");
+                System.out.println(">> CLIENTS SHOULD CONNECT TO IP: " + publicIp);
+                System.out.println("------------------------------------------------");
 
                 // Try to create registry on MY port
                 try {

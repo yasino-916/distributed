@@ -18,6 +18,7 @@ public class QuizClient extends JFrame {
     private User currentUser;
     private CardLayout cardLayout;
     private JPanel mainPanel;
+    private JLabel connectionStatusLbl; // New Field
 
     // UI Colors (Light Theme)
     private final Color CLR_BG = new Color(245, 245, 250); // Light Gray/White
@@ -51,29 +52,75 @@ public class QuizClient extends JFrame {
         new Thread(() -> {
             loadConfig();
 
-            boolean connected = false;
-            for (String serverAddr : serverList) {
-                try {
-                    String[] parts = serverAddr.split(":");
-                    String host = parts[0];
-                    int port = Integer.parseInt(parts[1]);
+            // Allow user to manually enter IP if they want (or if config is empty)
+            boolean useManual = false;
+            // Check if we should prompt (e.g., if config is missing or by default?)
+            // For now, let's try to connect to config first. If it fails, PROMPT the user.
 
-                    System.out.println("Trying to connect to " + host + ":" + port + "...");
-                    Registry registry = LocateRegistry.getRegistry(host, port);
-                    service = (QuizService) registry.lookup("QuizService");
-                    System.out.println("Connected to Leader/Node at " + serverAddr);
-                    connected = true;
-                    break;
-                } catch (Exception e) {
-                    System.err.println("Failed to connect to " + serverAddr);
-                }
-            }
+            boolean connected = tryConnectToKnownServers();
 
             if (!connected) {
-                SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(this,
-                        "Could not connect to ANY server in the cluster.\nPlease check config.properties."));
+                // Connection failed for all config entries. Ask User.
+                askUserForIP();
             }
         }).start();
+    }
+
+    private boolean tryConnectToKnownServers() {
+        for (String serverAddr : serverList) {
+            try {
+                String[] parts = serverAddr.split(":");
+                String host = parts[0];
+                int port = Integer.parseInt(parts[1]);
+
+                System.out.println("Trying to connect to " + host + ":" + port + "...");
+                Registry registry = LocateRegistry.getRegistry(host, port);
+                service = (QuizService) registry.lookup("QuizService");
+                System.out.println("Connected to Leader/Node at " + serverAddr);
+                return true;
+            } catch (Exception e) {
+                System.err.println("Failed to connect to " + serverAddr);
+            }
+        }
+        return false;
+    }
+
+    private void askUserForIP() {
+        SwingUtilities.invokeLater(() -> {
+            String input = JOptionPane.showInputDialog(this,
+                    "Could not connect to default servers.\nPlease enter the Server IP:Port (e.g., 192.168.1.5:1099):",
+                    "Connect to Server",
+                    JOptionPane.QUESTION_MESSAGE);
+
+            if (input != null && !input.trim().isEmpty()) {
+                new Thread(() -> {
+                    try {
+                        String[] parts = input.trim().split(":");
+                        String host = parts[0];
+                        int port = (parts.length > 1) ? Integer.parseInt(parts[1]) : 1099;
+
+                        Registry registry = LocateRegistry.getRegistry(host, port);
+                        service = (QuizService) registry.lookup("QuizService");
+
+                        // Add to list for future failover
+                        serverList.add(0, input.trim());
+
+                        System.out.println("Connected to manually entered server: " + input);
+                        JOptionPane.showMessageDialog(this, "Connected successfully!");
+                        if (connectionStatusLbl != null) {
+                            connectionStatusLbl.setText("Connected to: " + input.trim());
+                        }
+                    } catch (Exception e) {
+                        JOptionPane.showMessageDialog(this, "Connection Failed: " + e.getMessage());
+                        // Retry?
+                        askUserForIP();
+                    }
+                }).start();
+            } else {
+                JOptionPane.showMessageDialog(this, "Exiting application as no server was selected.");
+                System.exit(0);
+            }
+        });
     }
 
     private void loadConfig() {
@@ -87,8 +134,12 @@ public class QuizClient extends JFrame {
                 }
             }
         } catch (Exception e) {
-            System.err.println("Client could not load config.properties. Defaulting to localhost:1099");
-            serverList.add("localhost:1099");
+            System.err.println("Client could not load config.properties. Will prompt user.");
+        }
+
+        // Add manual override if list is empty
+        if (serverList.isEmpty()) {
+            // We do nothing here, the connect loop will fail and trigger askUserForIP()
         }
     }
 
@@ -199,6 +250,17 @@ public class QuizClient extends JFrame {
 
         loginBtn.addActionListener(e -> performLogin(userField.getText(), new String(passField.getPassword())));
 
+        // Connection Status
+        String currentServer = serverList.isEmpty() ? "None" : serverList.get(0);
+        connectionStatusLbl = new JLabel("Connected to: " + currentServer);
+        connectionStatusLbl.setFont(new Font("Segoe UI", Font.ITALIC, 12));
+        connectionStatusLbl.setForeground(Color.GRAY);
+
+        JButton changeServerBtn = new JButton("Change Server");
+        changeServerBtn.setFont(new Font("Segoe UI", Font.PLAIN, 11));
+        changeServerBtn.setBackground(Color.LIGHT_GRAY);
+        changeServerBtn.addActionListener(e -> askUserForIP());
+
         gbc.gridx = 0;
         gbc.gridy = 0;
         gbc.gridwidth = 2;
@@ -224,6 +286,15 @@ public class QuizClient extends JFrame {
         gbc.gridy = 3;
         gbc.gridwidth = 2;
         panel.add(loginBtn, gbc);
+
+        // Add Connection Info
+        gbc.gridy = 4;
+        gbc.insets = new Insets(20, 10, 0, 10);
+        panel.add(connectionStatusLbl, gbc);
+
+        gbc.gridy = 5;
+        gbc.insets = new Insets(5, 10, 10, 10);
+        panel.add(changeServerBtn, gbc);
 
         return panel;
     }

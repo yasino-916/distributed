@@ -81,8 +81,6 @@ public class DatabaseManager {
                     "password VARCHAR(255) NOT NULL, " +
                     "full_name VARCHAR(100), " +
                     "department VARCHAR(100), " +
-                    "full_name VARCHAR(100), " +
-                    "department VARCHAR(100), " +
                     "gender VARCHAR(10), " +
                     "score INT DEFAULT 0, " +
                     "has_submitted BOOLEAN DEFAULT FALSE)");
