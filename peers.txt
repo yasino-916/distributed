@@ -3,10 +3,10 @@
 # The order defines the Node ID (Line 1 = Node 1, Line 2 = Node 2, etc.)
 
 # Example for Local Testing (4 separate processes on localhost):
-127.0.0.1:1099
-127.0.0.1:1100
-127.0.0.1:1101
-127.0.0.1:1102
+#127.0.0.1:1099
+#127.0.0.1:1100
+#127.0.0.1:1101
+#127.0.0.1:1102
 
 # -----------------------------------------------------------------------
 # LAN CONFIGURATION (For multiple devices)
@@ -17,7 +17,7 @@
 # 3. Replace the IPs (192.168.x.x) with the ACTUAL IPs of your devices.
 # 4. Comment out the "Local Testing" lines above (add '#').
 
-# 192.168.1.101:1099
-# 192.168.1.102:1099
-# 192.168.1.103:1099
-# 192.168.1.104:1099
+192.168.137.1:1099
+192.168.137.1:1100
+192.168.137.1:1101
+192.168.137.1:1102
