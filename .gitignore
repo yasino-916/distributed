@@ -1,0 +1,13 @@
+*.class
+bin/
+*.log
+results_log.txt
+*.CSV
+*.csv
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.bak
+*.tmp
+*.temp

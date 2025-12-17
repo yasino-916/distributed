@@ -47,6 +47,8 @@ public class QuizClient extends JFrame {
 
     private java.util.Properties config;
     private java.util.List<String> serverList = new java.util.ArrayList<>();
+    private java.util.Timer heartbeatTimer;
+    private String currentServerAddress = "None";
 
     private void connectToServer() {
         new Thread(() -> {
@@ -62,6 +64,7 @@ public class QuizClient extends JFrame {
             } else {
                 // Connected successfully
                 updateTopology();
+                startHeartbeat(); // Start monitoring server health
             }
         }).start();
     }
@@ -86,6 +89,8 @@ public class QuizClient extends JFrame {
 
             try {
                 service = (QuizService) registry.lookup("QuizService");
+                currentServerAddress = serverAddr;
+                updateConnectionStatus("Connected to: " + serverAddr, true);
                 System.out.println("Connected to Leader/Node at " + serverAddr);
                 return true;
             } catch (java.rmi.NotBoundException nbe) {
@@ -169,6 +174,7 @@ public class QuizClient extends JFrame {
                         System.out.println("Connected to manually entered server: " + cleanInput);
                         JOptionPane.showMessageDialog(this, "Connected successfully!");
                         updateTopology(); // SYNC NOW
+                        startHeartbeat(); // Start monitoring server health
                     } else {
                         JOptionPane.showMessageDialog(this, "Connection Failed.");
                         // Retry?
@@ -182,21 +188,99 @@ public class QuizClient extends JFrame {
         });
     }
 
-    private void loadConfig() {
-        config = new java.util.Properties();
-        try (java.io.InputStream input = new java.io.FileInputStream("config.properties")) {
-            config.load(input);
-            // Collect all vals that look like host:port
-            for (String key : config.stringPropertyNames()) {
-                if (key.startsWith("node.")) {
-                    serverList.add(config.getProperty(key));
+    // ---------------- ACTIVE MONITORING & FAILOVER ----------------
+    private void startHeartbeat() {
+        if (heartbeatTimer != null) {
+            heartbeatTimer.cancel();
+        }
+        heartbeatTimer = new java.util.Timer(true);
+        heartbeatTimer.schedule(new java.util.TimerTask() {
+            @Override
+            public void run() {
+                if (service == null)
+                    return;
+                try {
+                    // lightweight ping
+                    service.getServerTime();
+                } catch (Exception e) {
+                    System.err.println("Heartbeat failed: " + e.getMessage());
+                    // Server likely down. Try to failover immediately.
+                    handleFailover();
                 }
             }
-        } catch (Exception e) {
-            System.err.println("Client could not load config.properties. Will prompt user.");
+        }, 3000, 3000); // Check every 3 seconds
+    }
+
+    private synchronized void handleFailover() {
+        System.out.println("Handling Failover...");
+        updateConnectionStatus("Connection Lost! Reconnecting...", false);
+
+        boolean reconnected = false;
+        // Try all known servers
+        for (String serverAddr : serverList) {
+            // Don't retry the one that just failed right away unless it's the only one
+            if (serverAddr.equals(currentServerAddress) && serverList.size() > 1)
+                continue;
+
+            if (attemptConnection(serverAddr)) {
+                System.out.println("Failover successful: Connected to " + serverAddr);
+                reconnected = true;
+                break;
+            }
         }
 
-        // Don't do anything else, connection loop handles empty list
+        if (!reconnected) {
+            SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(QuizClient.this,
+                    "Lost connection to cluster. Please restart or check network.",
+                    "Connection Lost", JOptionPane.ERROR_MESSAGE));
+        }
+    }
+
+    private void updateConnectionStatus(String status, boolean isConnected) {
+        if (connectionStatusLbl != null) {
+            SwingUtilities.invokeLater(() -> {
+                connectionStatusLbl.setText(status);
+                connectionStatusLbl.setForeground(isConnected ? new Color(46, 204, 113) : Color.RED);
+            });
+        }
+    }
+
+    private void loadConfig() {
+        config = new java.util.Properties();
+        serverList.clear();
+
+        // 1. First try to load from peers.txt (PRIORITY - matches server configuration)
+        try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.FileReader("peers.txt"))) {
+            String line;
+            int count = 1;
+            while ((line = br.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("#"))
+                    continue;
+
+                // Format: IP:Port
+                serverList.add(line);
+                config.setProperty("node." + count, line);
+                count++;
+            }
+            System.out.println("Client loaded " + serverList.size() + " servers from peers.txt");
+        } catch (Exception e) {
+            System.err.println("Client could not load peers.txt. Falling back to config.properties...");
+
+            // 2. Fallback to config.properties if peers.txt doesn't exist
+            try (java.io.InputStream input = new java.io.FileInputStream("config.properties")) {
+                config.load(input);
+                // Collect all vals that look like host:port
+                for (String key : config.stringPropertyNames()) {
+                    if (key.startsWith("node.")) {
+                        serverList.add(config.getProperty(key));
+                    }
+                }
+                System.out.println("Client loaded " + serverList.size() + " servers from config.properties");
+            } catch (Exception ex) {
+                System.err.println("Client could not load config.properties either. Will prompt user.");
+            }
+        }
     }
 
     // ---------------- ROBUST RMI CONNECTION LOGIC ----------------
